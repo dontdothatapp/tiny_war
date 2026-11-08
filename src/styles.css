@@ -1,0 +1,397 @@
+:root {
+  --phos: #9dff9a;
+  --phos-dim: rgba(157, 255, 154, 0.55);
+  --panel: rgba(10, 24, 12, 0.72);
+  --panel-edge: rgba(157, 255, 154, 0.35);
+  --warn: #ff5a4a;
+  --gold: #e8d24a;
+  --font: 'VT323', 'Courier New', ui-monospace, monospace;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #1a1712;
+  overflow: hidden;
+  font-family: var(--font);
+  color: var(--phos);
+  user-select: none;
+}
+#app {
+  position: fixed;
+  inset: 0;
+}
+#game-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  cursor: crosshair;
+}
+
+/* ------------------------------------------------------------------ HUD */
+.hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-size: 18px;
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 6px rgba(120, 255, 140, 0.35);
+}
+.hud-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.hud-damage {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, rgba(255, 40, 20, 0) 40%, rgba(255, 40, 20, 0.85));
+  opacity: 0;
+}
+.hud-panel {
+  position: absolute;
+  background: var(--panel);
+  border: 2px solid var(--panel-edge);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.hud-obj {
+  top: 14px;
+  left: 14px;
+  min-width: 250px;
+  max-width: 360px;
+}
+.hud-obj .t {
+  color: var(--phos-dim);
+  margin-bottom: 4px;
+}
+.hud-obj .done {
+  color: var(--phos-dim);
+  text-decoration: line-through;
+}
+.hud-obj .active {
+  color: #fff;
+  animation: blink 0.9s steps(2) infinite;
+}
+.hud-radar {
+  top: 14px;
+  right: 14px;
+  padding: 4px;
+  line-height: 0;
+}
+.hud-status {
+  left: 14px;
+  bottom: 14px;
+  min-width: 330px;
+}
+.hud-flight {
+  right: 14px;
+  bottom: 14px;
+  min-width: 210px;
+}
+.hud .row {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  white-space: pre;
+}
+.hud .row.w {
+  justify-content: flex-start;
+  gap: 16px;
+}
+.hud .row b {
+  color: var(--gold);
+  font-weight: normal;
+}
+.hud .crit {
+  color: var(--warn);
+  animation: blink 0.6s steps(2) infinite;
+}
+.hud-warn {
+  position: absolute;
+  top: 70px;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  color: var(--warn);
+  font-size: 30px;
+  text-shadow: 0 0 10px rgba(255, 80, 60, 0.6);
+}
+.hud-warn div {
+  animation: blink 0.5s steps(2) infinite;
+}
+.hud-warn div.info {
+  color: var(--phos);
+  font-size: 22px;
+  animation: none;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.8);
+}
+.hud-msgs {
+  position: absolute;
+  top: 34%;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  font-size: 22px;
+}
+.hud-msg {
+  transition: opacity 0.7s;
+  text-shadow: 0 0 8px rgba(0, 0, 0, 0.9), 0 0 2px #000;
+}
+.hud-msg.fade {
+  opacity: 0;
+}
+.hud-help {
+  position: absolute;
+  bottom: 140px;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  padding: 6px 14px;
+  border-radius: 6px;
+  transition: opacity 1s;
+  opacity: 0;
+  font-size: 17px;
+}
+.hud-map {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.hud-map canvas {
+  width: min(80vh, 90vw);
+  height: min(80vh, 90vw);
+  border: 2px solid var(--panel-edge);
+  image-rendering: pixelated;
+}
+@keyframes blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+.debug {
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 15px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 2px 8px;
+  display: none;
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------------ menus */
+.menu-root {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, rgba(14, 12, 8, 0.35), rgba(14, 12, 8, 0.8));
+  padding: 16px;
+  box-sizing: border-box;
+}
+.menu {
+  background: rgba(10, 20, 11, 0.86);
+  border: 2px solid var(--panel-edge);
+  border-radius: 8px;
+  padding: 22px 28px;
+  max-width: 980px;
+  width: 100%;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  font-size: 20px;
+  box-shadow: 0 10px 50px rgba(0, 0, 0, 0.5);
+}
+.menu.title {
+  max-width: 760px;
+  text-align: center;
+}
+.menu .logo {
+  font-size: 96px;
+  line-height: 0.9;
+  color: #f2e2b8;
+  letter-spacing: 0.08em;
+  text-shadow: 4px 4px 0 #6b4a2a, 0 0 18px rgba(255, 200, 120, 0.35);
+}
+.menu .logo span {
+  color: var(--phos);
+  margin-left: 14px;
+  text-shadow: 4px 4px 0 #1d4a22;
+}
+.menu .sub {
+  color: var(--phos-dim);
+  margin: 6px 0 18px;
+}
+.menu .h {
+  font-size: 40px;
+  margin-bottom: 4px;
+}
+.menu .h.good {
+  color: var(--phos);
+}
+.menu .h.bad {
+  color: var(--warn);
+}
+.menu .h .cr {
+  color: var(--gold);
+  float: right;
+}
+.menu .t {
+  color: var(--gold);
+  margin-bottom: 4px;
+}
+.menu .dim {
+  color: var(--phos-dim);
+  font-size: 18px;
+}
+.menu .blink {
+  animation: blink 0.8s steps(2) infinite;
+}
+.menu .btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 18px;
+}
+.menu.title .btns {
+  flex-direction: column;
+  align-items: center;
+}
+.menu button {
+  font-family: var(--font);
+  font-size: 22px;
+  background: rgba(157, 255, 154, 0.08);
+  color: var(--phos);
+  border: 2px solid var(--panel-edge);
+  border-radius: 6px;
+  padding: 6px 18px;
+  cursor: pointer;
+  min-width: 260px;
+}
+.menu button small {
+  color: var(--gold);
+  font-size: 18px;
+}
+.menu button:hover:not([disabled]) {
+  background: rgba(157, 255, 154, 0.2);
+  border-color: var(--phos);
+}
+.menu button.b-primary {
+  background: var(--phos);
+  color: #0b1a0c;
+  border-color: var(--phos);
+}
+.menu button.b-primary:hover {
+  background: #c4ffc2;
+}
+.menu button[disabled] {
+  opacity: 0.4;
+  cursor: default;
+}
+.menu button.poor {
+  color: var(--warn);
+}
+.menu .controls {
+  margin-top: 20px;
+  text-align: left;
+  font-size: 17px;
+  line-height: 1.35;
+  display: grid;
+  gap: 4px;
+}
+.menu .controls b {
+  color: var(--gold);
+  font-weight: normal;
+  margin-right: 6px;
+}
+.menu .cols,
+.menu .hangar-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+  margin: 16px 0;
+}
+.menu .hangar-cols {
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+}
+.menu table {
+  margin: 14px auto;
+  border-collapse: collapse;
+  min-width: 60%;
+}
+.menu td {
+  padding: 2px 12px;
+}
+.menu td:last-child {
+  text-align: right;
+  color: var(--gold);
+}
+.menu .up {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+  padding: 8px 0;
+  border-bottom: 1px dashed rgba(157, 255, 154, 0.2);
+}
+.menu .up .dim {
+  font-size: 16px;
+}
+.menu .up button {
+  min-width: 0;
+  font-size: 18px;
+  padding: 2px 10px;
+}
+.menu .pips {
+  display: flex;
+  gap: 4px;
+}
+.menu .pips i {
+  width: 18px;
+  height: 8px;
+  border: 1px solid var(--phos-dim);
+}
+.menu .pips i.on {
+  background: var(--phos);
+}
+.menu .pips i.lock {
+  border-style: dashed;
+  opacity: 0.35;
+}
+.menu .stats {
+  font-size: 17px;
+  color: var(--phos-dim);
+  text-align: center;
+}
+
+@media (max-width: 760px) {
+  .menu .hangar-cols,
+  .menu .cols {
+    grid-template-columns: 1fr;
+  }
+  .menu .logo {
+    font-size: 64px;
+  }
+  .hud-status,
+  .hud-flight {
+    min-width: 0;
+    font-size: 15px;
+  }
+  .hud-obj {
+    min-width: 0;
+    max-width: 55vw;
+    font-size: 15px;
+  }
+}
