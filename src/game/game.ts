@@ -15,7 +15,7 @@ import { Menus, PadStatus } from '../ui/menus';
 import { BodySystem } from '../voxel/bodies';
 import { ChunkRenderer } from '../voxel/chunkRenderer';
 import { Destruction } from '../voxel/destruction';
-import { M, MAT_SOFT, MAT_TERRAIN } from '../voxel/materials';
+import { M } from '../voxel/materials';
 import { VoxelWorld } from '../voxel/world';
 import { MapGenerator, WORLD_HEIGHT } from '../world/generator';
 import type { BaseDef, MapData } from '../world/mapTypes';
@@ -48,6 +48,22 @@ interface Ammo {
 const SUN_DIR = new THREE.Vector3(-0.5, 0.85, 0.35).normalize();
 /** Fire-control range (voxels). */
 const AIM_RANGE = 230;
+/** Gunner acquisition cone (half-angle) and the wider cone it keeps a target in. */
+const ACQUIRE_CONE = 0.27;
+const KEEP_CONE = 0.46;
+/** Time a clearly better candidate must stay better before the gunner switches. */
+const SWITCH_DELAY = 0.35;
+const LOCK_TIME = 0.6;
+
+/** Something the gunner has picked to shoot at. */
+interface Designation {
+  kind: 'turret' | 'structure';
+  turret: Turret | null;
+  sid: number;
+  point: THREE.Vector3;
+  label: string;
+  objective: boolean;
+}
 
 export class Game {
   readonly rig: SceneRig;
@@ -87,11 +103,18 @@ export class Game {
   private rocketT = 0;
   private flareT = 0;
   private podLeft = true;
-  private lockTurret: Turret | null = null;
+  /** the gunner's current target (null = firing at the boresight point) */
+  private desig: Designation | null = null;
+  /** a better candidate the gunner is considering switching to */
+  private desigCand: Designation | null = null;
+  private desigCandT = 0;
+  /** time the designated target has been held (missile lock) */
   private lockT = 0;
+  private boresight = new THREE.Vector3();
+  private objectiveTurrets = new Set<Turret>();
+  private objectiveStructures = new Set<number>();
   private aim = new THREE.Vector3();
   private aimValid = false;
-  private aimKind: 'turret' | 'structure' | 'ground' = 'ground';
   private aimBlocked = false;
   private aimLosT = 0;
   /** the current map has been flown in (and possibly blown up) */
@@ -494,6 +517,10 @@ export class Game {
       return rs;
     });
     this.projectiles.enemyTargets = this.turrets.map((t) => t.hitTarget);
+    this.objectiveTurrets = new Set(this.map.bases.flatMap((b) => b.objectives.filter((o) => o.kind === 'turret').map((o) => this.turrets[o.index])));
+    this.objectiveStructures = new Set(this.map.bases.flatMap((b) => b.objectives.filter((o) => o.kind === 'structure').map((o) => o.index)));
+    this.desig = this.desigCand = null;
+    this.aimValid = false;
     this.projectiles.playerTarget = this.heliTarget;
     this.stats = computeStats(this.save);
     this.heli.stats = this.stats;
@@ -696,52 +723,57 @@ export class Game {
   // ======================================================================== aiming + weapons
 
   /**
-   * Fire control. Every weapon shoots straight ahead along the heading and the
-   * system auto-ranges: first an enemy emplacement inside a narrow cone ahead,
-   * then the first building or vehicle on the line ahead, otherwise a ground
-   * point that moves further out the higher you fly. Cannon, rockets and the
-   * missile lock all use this one aim point.
+   * Fire control, modelled on the "co-pilot gunner" of classic isometric
+   * helicopter shooters. The pilot only points the nose:
+   *  - the boresight point sits on the ground straight ahead (no aim input);
+   *  - a gunner designates real enemy targets (emplacements, enemy buildings and
+   *    vehicles; never walls, neutral buildings or debris) inside a cone ahead,
+   *    and sticks with a target until it leaves a wider cone or a clearly better
+   *    one has been better for a moment (hysteresis, no flicker);
+   *  - the aim point glides between boresight and target instead of snapping.
+   * Cannon and rockets fire at the aim point; missiles lock the designated target.
    */
   private updateAim(dt: number) {
     const h = this.heli;
     const fwd = h.forward(new THREE.Vector3());
-    let target: Turret | null = null;
-    let bestScore = Infinity;
-    for (const t of this.turrets) {
-      if (!t.alive) continue;
-      const dx = t.center.x - h.pos.x,
-        dz = t.center.z - h.pos.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist < 10 || dist > AIM_RANGE) continue;
-      const ang = Math.acos(clamp((dx * fwd.x + dz * fwd.z) / dist, -1, 1));
-      // the cone stays a few metres wide at any range
-      if (ang > Math.max(0.12, Math.atan2(14, dist))) continue;
-      const score = ang * 400 + dist * 0.2;
-      if (score < bestScore) {
-        bestScore = score;
-        target = t;
+    const S = this.map.size;
+    // boresight: ground straight ahead, further out the higher you fly (terrain only, so it never jumps onto roofs)
+    const d = clamp(60 + h.agl * 1.0, 60, 140);
+    const bx = clamp(h.pos.x + fwd.x * d, 0, S - 1),
+      bz = clamp(h.pos.z + fwd.z * d, 0, S - 1);
+    const by = this.map.heights[Math.floor(bx) + Math.floor(bz) * S];
+    this.boresight.set(bx, by, bz);
+
+    // re-validate the current target, then look for a better one
+    const cur = this.desig && this.desigValid(this.desig) ? this.desig : null;
+    const curScore = cur ? this.desigScore(cur, fwd, KEEP_CONE, AIM_RANGE + 40) : Infinity;
+    const keep = cur && curScore < Infinity ? cur : null;
+    const best = this.findTarget(fwd);
+    if (!keep) {
+      this.desig = best;
+      this.desigCand = null;
+    } else if (best && !this.sameTarget(best, keep) && this.desigScore(best, fwd, ACQUIRE_CONE, AIM_RANGE) < curScore - 30) {
+      // clearly better candidate: switch only if it stays better for a moment
+      if (this.desigCand && this.sameTarget(this.desigCand, best)) this.desigCandT += dt;
+      else {
+        this.desigCand = best;
+        this.desigCandT = 0;
       }
-    }
-    const want = new THREE.Vector3();
-    if (target) {
-      want.copy(target.center);
-      this.aimKind = 'turret';
+      if (this.desigCandT >= SWITCH_DELAY) {
+        this.desig = best;
+        this.desigCand = null;
+      } else this.desig = keep;
     } else {
-      const hit = this.scanAhead(fwd);
-      if (hit) {
-        want.copy(hit);
-        this.aimKind = 'structure';
-      } else {
-        const d = clamp(55 + h.agl * 1.2, 55, 150);
-        const x = h.pos.x + fwd.x * d,
-          z = h.pos.z + fwd.z * d;
-        want.set(x, this.surfaceY(x, z), z);
-        this.aimKind = 'ground';
-      }
+      this.desig = keep;
+      this.desigCand = null;
     }
-    // glide between nearby points, snap when the target changes a lot
-    if (!this.aimValid || this.aim.distanceTo(want) > 60) this.aim.copy(want);
-    else this.aim.lerp(want, 1 - Math.exp(-14 * dt));
+    if (this.desig && cur && this.sameTarget(this.desig, cur)) this.lockT += dt;
+    else this.lockT = 0;
+
+    // glide the aim point toward the target / boresight
+    const want = this.desig ? this.desig.point : this.boresight;
+    if (!this.aimValid || this.aim.distanceTo(h.pos) > 600) this.aim.copy(want);
+    else this.aim.lerp(want, 1 - Math.exp(-9 * dt));
     this.aimValid = true;
     // is there a clear line from the aircraft to the aim point? (dims the reticle when not)
     this.aimLosT -= dt;
@@ -749,40 +781,62 @@ export class Game {
       this.aimLosT = 0.1;
       this.aimBlocked = !this.world.lineClear(h.pos.x, h.pos.y + 1.5, h.pos.z, this.aim.x, this.aim.y, this.aim.z, 6, 3);
     }
-    // missile lock = an emplacement held in the fire-control cone
-    if (target && target === this.lockTurret) this.lockT += dt;
-    else {
-      this.lockTurret = target;
-      this.lockT = 0;
-    }
   }
 
-  /** First solid, non-foliage object (building, vehicle, wall) on the line ahead of the nose. */
-  private scanAhead(fwd: THREE.Vector3): THREE.Vector3 | null {
+  private sameTarget(a: Designation, b: Designation): boolean {
+    return a.kind === b.kind && (a.kind === 'turret' ? a.turret === b.turret : a.sid === b.sid);
+  }
+
+  private desigValid(t: Designation): boolean {
+    return t.kind === 'turret' ? !!t.turret?.alive : !this.tracker.states[t.sid].destroyed;
+  }
+
+  /** Lower is better; Infinity = outside the cone / range. */
+  private desigScore(t: Designation, fwd: THREE.Vector3, cone: number, range: number): number {
     const h = this.heli;
-    const S = this.map.size;
-    const from = Math.floor(h.pos.y + 10);
-    for (let d = 14; d <= AIM_RANGE; d += 2) {
-      const x = Math.floor(h.pos.x + fwd.x * d),
-        z = Math.floor(h.pos.z + fwd.z * d);
-      if (x < 0 || z < 0 || x >= S || z >= S) return null;
-      const y = this.world.topY(x, z, from);
-      if (y < 0) continue;
-      const m = this.world.get(x, y, z);
-      if (MAT_TERRAIN[m] || MAT_SOFT[m]) continue;
-      const base = this.map.heights[x + z * S];
-      if (y + 1 - base < 3) continue;
-      // aim at mid-height of the face we're looking at
-      return new THREE.Vector3(x + 0.5, (base + y + 1) / 2, z + 0.5);
-    }
-    return null;
+    const dx = t.point.x - h.pos.x,
+      dz = t.point.z - h.pos.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist < 12 || dist > range) return Infinity;
+    const ang = Math.acos(clamp((dx * fwd.x + dz * fwd.z) / dist, -1, 1));
+    if (ang > cone) return Infinity;
+    let score = (ang / ACQUIRE_CONE) * 100 + dist * 0.15;
+    if (t.kind === 'turret') score -= t.turret!.hasLOS ? 35 : 15; // active threats first
+    if (t.objective) score -= 15;
+    return score;
   }
 
-  /** Surface height under a map point (roofs count), searched from above the aircraft. */
-  private surfaceY(x: number, z: number): number {
-    const y = this.world.topY(x, z, Math.floor(this.heli.pos.y + 30));
-    return y >= 0 ? y + 1 : this.heli.pos.y - this.heli.agl;
+  /** Best enemy target inside the acquisition cone. */
+  private findTarget(fwd: THREE.Vector3): Designation | null {
+    const h = this.heli;
+    let best: Designation | null = null;
+    let bestScore = Infinity;
+    const consider = (t: Designation) => {
+      const sc = this.desigScore(t, fwd, ACQUIRE_CONE, AIM_RANGE);
+      if (sc < bestScore) {
+        bestScore = sc;
+        best = t;
+      }
+    };
+    for (const t of this.turrets) {
+      if (!t.alive) continue;
+      if (Math.abs(t.center.x - h.pos.x) > AIM_RANGE || Math.abs(t.center.z - h.pos.z) > AIM_RANGE) continue;
+      consider({ kind: 'turret', turret: t, sid: -1, point: t.center, label: t.spec.name.toUpperCase(), objective: this.objectiveTurrets.has(t) });
+    }
+    for (const st of this.tracker.states) {
+      const def = st.def;
+      if (st.destroyed || def.team !== 'enemy' || def.kind === 'wall') continue;
+      const cx = (def.x0 + def.x1) / 2,
+        cz = (def.z0 + def.z1) / 2;
+      if (Math.abs(cx - h.pos.x) > AIM_RANGE || Math.abs(cz - h.pos.z) > AIM_RANGE) continue;
+      // aim low on the structure: knocking out the base brings it down
+      const y = def.y0 + Math.min(5, (def.y1 - def.y0) * 0.35);
+      consider({ kind: 'structure', turret: null, sid: def.id, point: new THREE.Vector3(cx, y, cz), label: def.label.toUpperCase(), objective: this.objectiveStructures.has(def.id) });
+    }
+    return best;
   }
+
+
 
   private updateWeapons(dt: number) {
     const h = this.heli;
@@ -861,12 +915,13 @@ export class Game {
     if (inp.hit('KeyF') || this.padHit(missileBtn)) {
       if (st.missiles <= 0) this.hud.message('Guided missiles not installed (hangar upgrade)', '#ffb84a', 1800);
       else if (this.ammo.missiles <= 0) this.audio.deny();
-      else if (!this.lockTurret || this.lockT < 0.6) {
+      else if (!this.desig || this.lockT < LOCK_TIME) {
         this.audio.deny();
-        this.hud.message('NO LOCK — point the nose at an emplacement', '#ffb84a', 1500);
+        this.hud.message('NO LOCK — keep the nose on a target', '#ffb84a', 1500);
       } else {
         this.ammo.missiles--;
-        const t = this.lockTurret;
+        const t = this.desig;
+        const targetRef = t.kind === 'turret' ? t.turret!.hitTarget : { pos: t.point.clone(), alive: true };
         const p = h.podWorld(this.podLeft, new THREE.Vector3());
         p.y -= 1;
         this.podLeft = !this.podLeft;
@@ -883,7 +938,7 @@ export class Game {
           radius: 5.5,
           power: 16,
           damage: 140,
-          targetRef: t.hitTarget,
+          targetRef,
           color: 0xffffff,
         });
         this.audio.missile();
@@ -1494,33 +1549,28 @@ export class Game {
     if (this.state !== 'playing' || h.dead) return;
     const cam = this.rig.camera;
     const sp = { x: 0, y: 0, behind: false };
-    // fire-control reticle (cannon + rockets), with a sight line from the aircraft
+    // boresight: where the weapons point when the gunner has no target
+    hud.project(this.boresight, cam, sp);
+    hud.ring(sp.x, sp.y, 5, 'rgba(157,255,154,0.45)');
+    // gunner designation (bracket + name), red LOCK when a missile can be fired
+    if (this.desig) {
+      hud.project(this.desig.point, cam, sp);
+      const locked = this.stats.missiles > 0 && this.lockT >= LOCK_TIME;
+      const col = locked ? '#ff4a3a' : this.desig.kind === 'turret' ? '#ff8a5a' : '#ffe46a';
+      hud.bracket(sp.x, sp.y, 16, col, locked ? `${this.desig.label} · LOCK` : this.desig.label);
+    }
+    // aim point (cannon + rockets) with a sight line from the aircraft
     if (this.aimValid) {
       hud.project(this.aim, cam, sp);
       const hp = { x: 0, y: 0, behind: false };
       hud.project(h.pos, cam, hp);
-      const col =
-        this.ammo.gun <= 0 && this.ammo.rockets <= 0
-          ? '#ff6a5a'
-          : this.aimBlocked
-            ? 'rgba(200,200,190,0.55)'
-            : this.aimKind === 'turret'
-              ? '#ff8a5a'
-              : this.aimKind === 'structure'
-                ? '#ffe46a'
-                : '#9dff9a';
+      const col = this.ammo.gun <= 0 && this.ammo.rockets <= 0 ? '#ff6a5a' : this.aimBlocked ? 'rgba(200,200,190,0.55)' : this.desig ? '#ffe46a' : '#9dff9a';
       hud.line(hp.x, hp.y, sp.x, sp.y, 'rgba(157,255,154,0.3)', true);
-      hud.crosshair(sp.x, sp.y, col, this.aimKind === 'ground' ? 9 : 12);
-    }
-    // missile lock
-    if (this.lockTurret && this.stats.missiles > 0) {
-      hud.project(this.lockTurret.center, cam, sp);
-      const locked = this.lockT >= 0.6;
-      hud.bracket(sp.x, sp.y, 16, locked ? '#ff4a3a' : '#ffe46a', locked ? 'LOCK' : '');
+      hud.crosshair(sp.x, sp.y, col, 10);
     }
     // nearby threats get small brackets
     for (const t of this.turrets) {
-      if (!t.alive || t === this.lockTurret || !t.awake) continue;
+      if (!t.alive || t === this.desig?.turret || !t.awake) continue;
       hud.project(t.center, cam, sp);
       if (sp.behind || sp.x < 0 || sp.y < 0 || sp.x > hud.overlay.width || sp.y > hud.overlay.height) continue;
       hud.bracket(sp.x, sp.y, 10, t.hasLOS ? 'rgba(255,90,70,0.9)' : 'rgba(255,170,90,0.45)');

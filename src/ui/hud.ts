@@ -427,6 +427,15 @@ export class Hud {
     }
   }
 
+  ring(x: number, y: number, r: number, color: string) {
+    const c = this.ctx2d;
+    c.strokeStyle = color;
+    c.lineWidth = 1.5;
+    c.beginPath();
+    c.arc(x, y, r, 0, Math.PI * 2);
+    c.stroke();
+  }
+
   progressRing(x: number, y: number, t: number, color: string) {
     const c = this.ctx2d;
     c.strokeStyle = color;

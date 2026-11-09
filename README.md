@@ -29,13 +29,12 @@ You need a desktop browser with WebGL2. The build is about 680 KB of JS (about 1
 | **H** | toggle flight assists (SAS on, or full manual) |
 | **M** map · **P** pixel size · **Wheel** zoom · **Esc** pause · **`** debug stats |
 
-**Aiming.** You don't aim separately: all weapons fire straight ahead along the helicopter's heading, and fire control works out the range. It aims at the first of these it finds:
+**Aiming.** You only point the nose; there's no separate aim control. Like the co-pilot gunner in classic isometric helicopter games, an onboard gunner does the fine aiming:
 
-1. an enemy emplacement in a narrow cone ahead of the nose;
-2. the first building, wall or vehicle on the line ahead;
-3. a ground point ahead, further out the higher you fly.
-
-Cannon rounds and rockets both go to that reticle. The reticle is yellow on a structure, orange on an emplacement and green on open ground, and it turns grey when terrain blocks the line of fire.
+- **Boresight (small green ring):** a ground point straight ahead of the nose, further out the higher you fly. With no target, the weapons fire here.
+- **Gunner target (bracket with a name):** the gunner picks enemy emplacements, buildings and vehicles within about ±15° of the nose. It ignores walls, neutral buildings and debris, and prefers guns that are shooting at you and mission objectives. It holds a target until it leaves about ±26°, and only switches when another target is clearly better for a moment.
+- **Aim point (crosshair):** glides between the boresight and the target. Cannon rounds and rockets both go there. It turns grey when terrain or cover blocks the line of fire.
+- **Missile lock:** keep a target bracketed for 0.6 s and the bracket turns red with LOCK. Missiles can lock onto emplacements or buildings.
 
 ### Controller
 

@@ -63,15 +63,26 @@ The altitude trade-off is deliberate. Flying low (nap-of-the-earth) beats flak a
 
 Player weapons:
 
-- **Fire control** (`updateAim` and `scanAhead` in `game.ts`): you never aim separately. Every weapon fires straight ahead along the heading, and fire control sets the range. It picks, in order:
-  1. an enemy emplacement inside a narrow cone ahead (about 14 voxels wide at any range, out to 230);
-  2. the first building, wall or vehicle on the line ahead, aiming at mid-height of its near face (foliage is ignored);
-  3. a ground point 55–150 voxels ahead that moves further out with altitude.
+- **Fire control** (`updateAim`, `findTarget` and `desigScore` in `game.ts`) follows a "pilot points, gunner aims" model:
+  - **Boresight:** a ground point straight ahead, 60–140 voxels out depending on altitude. It uses the terrain height map, so it never jumps onto roofs.
+  - **Designation:** only *enemy* emplacements and enemy structures (walls excluded) within ±15° and 230 voxels can be picked. The score is mostly angle off the nose, plus a little distance, with bonuses for emplacements that have line of sight and for mission objectives.
+  - **Hysteresis:** a target is kept until it leaves ±26°. A rival must score clearly better (by 30) for 0.35 s before the gunner switches. In tests with the nose weaving through enemy bases, that came to about one switch every three seconds.
+  - **Aim point:** glides toward the target or boresight with exponential smoothing (rate 9/s) and never snaps. The structure aim point sits low on the building, because knocking out the load-bearing band brings it down.
+  - **Weapons:** cannon rounds and rockets fly to the aim point and don't inherit the aircraft's velocity. In tests, rockets hit the designated target about 80–90% of the time, and most misses happened when the line of fire was blocked, which the grey reticle shows.
 
-  Cannon rounds and rockets both fly to that one point. They don't inherit the aircraft's velocity, so they land on the reticle. The reticle changes colour by target type and turns grey when terrain blocks the line of fire.
+  **Research notes.** The original Strike series worked like this:
+  - The pilot only rotates and flies. A d-pad press moves forward or turns, and holding a button strafes.
+  - The **co-pilot aims the guns**: the DOS manual calls the co-pilot "responsible for aiming the guns", and a better co-pilot makes the pilot's job easier.
+  - Hydras had some auto-aim.
+  - Hellfires home in on their target.
+  - Hits and misses were shown with different explosion colours.
+  - Altitude was abstracted away.
+
+  Modern aim-assist practice adds three rules: keep the target the player is already tracking, ease rather than snap, and switch only on a clear improvement. Sources: [Sega-16 review](https://www.sega-16.com/2004/09/desert-strike-return-to-the-gulf/), [DOS manual](https://www.retrogames.cz/manualy/DOS/Desert_Strike_-_DOS_-_Manual.pdf), [Retro Looney review](https://retrolooney.co.uk/mega-drive-reviews/smd-desert-strike/), [Jungle Strike Game Gear review](https://gamefaqs.gamespot.com/gamegear/586720-jungle-strike/reviews/173307), [Overwatch aim-assist notes](https://eu.forums.blizzard.com/en/overwatch/t/console-aim-assist-updates/8697), [Insomniac aim-assist talk (GDC)](https://gdcvault.com/play/1017942/Techniques-for-Building-Aim-Assist).
+- **Ideas from the same research, not yet built:** different hit and miss impact colours, and choosing a co-pilot with gunner skill (tighter cone and faster lock) as an unlock.
 - **Chin cannon:** small high-explosive (HE) blasts. The turret slews toward the fire-control point.
 - **Rockets:** launched from the pods and dive onto the same point.
-- **Guided missiles:** lock on to the emplacement held in the fire-control cone for about 0.6 s.
+- **Guided missiles:** lock onto the gunner's designated target (an emplacement or a building) once it has been held for 0.6 s.
 - **Flares.**
 
 ## 6. Run structure and progression
