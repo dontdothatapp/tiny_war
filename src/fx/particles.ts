@@ -48,6 +48,7 @@ void main() {
 
 const FRAG = /* glsl */ `
 uniform vec3 uSunDir;
+uniform vec3 uLight;
 uniform vec3 fogColor;
 uniform float fogNear;
 uniform float fogFar;
@@ -57,7 +58,8 @@ varying vec3 vNormalW;
 varying float vFogDepth;
 void main() {
   float l = 0.55 + 0.45 * max(dot(vNormalW, uSunDir), 0.0) + 0.15 * vNormalW.y;
-  vec3 c = mix(vColor * l, vColor * 1.6, vParams.y);
+  // glowing particles are pushed above 1.0 so the bloom pass picks them up
+  vec3 c = mix(vColor * l * uLight, vColor * 2.1, vParams.y);
   float f = smoothstep(fogNear, fogFar, vFogDepth);
   c = mix(c, fogColor, f * (1.0 - vParams.y * 0.5));
   gl_FragColor = vec4(c, vParams.x);
@@ -101,6 +103,7 @@ export class ParticleSystem {
       blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
       uniforms: {
         uSunDir: { value: sunDir.clone().normalize() },
+        uLight: { value: new THREE.Vector3(1, 1, 1) },
         fogColor: { value: fog.color },
         fogNear: { value: fog.near },
         fogFar: { value: fog.far },
@@ -115,6 +118,17 @@ export class ParticleSystem {
 
   get count() {
     return this.n;
+  }
+
+  /** Brightness of lit particles (smoke goes dark at night; glowing ones are unaffected). */
+  setLight(r: number, g: number, b: number) {
+    ((this.mesh.material as THREE.ShaderMaterial).uniforms.uLight.value as THREE.Vector3).set(r, g, b);
+  }
+
+  setFog(near: number, far: number) {
+    const u = (this.mesh.material as THREE.ShaderMaterial).uniforms;
+    u.fogNear.value = near;
+    u.fogFar.value = far;
   }
 
   spawn(p: ParticleSpawn) {

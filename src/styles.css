@@ -105,6 +105,70 @@ body {
   color: var(--gold);
   font-weight: normal;
 }
+/* segmented gauge bars (armor, fuel, XP, streak timer) */
+.hud .bar {
+  position: relative;
+  flex: 1;
+  height: 12px;
+  align-self: center;
+  background: rgba(157, 255, 154, 0.1);
+  box-shadow: 0 0 0 1px rgba(157, 255, 154, 0.3);
+}
+.hud .bar i {
+  display: block;
+  height: 100%;
+  background: var(--phos);
+  box-shadow: 0 0 6px rgba(120, 255, 140, 0.45);
+}
+.hud .bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(90deg, transparent 0 8px, rgba(10, 24, 12, 0.95) 8px 10px);
+}
+.hud .bar.crit i {
+  background: var(--warn);
+  box-shadow: 0 0 6px rgba(255, 90, 74, 0.6);
+  animation: blink 0.6s steps(2) infinite;
+}
+.hud .bar.xp i {
+  background: var(--gold);
+  box-shadow: 0 0 6px rgba(232, 210, 74, 0.4);
+}
+.hud .row .num {
+  min-width: 44px;
+  text-align: right;
+}
+.hud-streak {
+  position: absolute;
+  top: 218px;
+  right: 14px;
+  width: 172px;
+  padding: 4px 10px 8px;
+  background: var(--panel);
+  border: 2px solid rgba(232, 210, 74, 0.55);
+  border-radius: 6px;
+  color: var(--gold);
+  font-size: 20px;
+  text-align: center;
+  text-shadow: 0 0 6px rgba(232, 210, 74, 0.4);
+}
+.hud-streak b {
+  font-weight: normal;
+  font-size: 26px;
+  color: #fff3b0;
+}
+.hud-streak .bar {
+  display: block;
+  height: 6px;
+  margin-top: 2px;
+  box-shadow: 0 0 0 1px rgba(232, 210, 74, 0.35);
+  background: rgba(232, 210, 74, 0.12);
+}
+.hud-streak .bar i {
+  background: var(--gold);
+  box-shadow: none;
+}
 .hud .crit {
   color: var(--warn);
   animation: blink 0.6s steps(2) infinite;
@@ -254,6 +318,15 @@ body {
 .menu .dim {
   color: var(--phos-dim);
   font-size: 18px;
+}
+.menu .cond {
+  margin: 6px 0 2px;
+  color: var(--phos-dim);
+  font-size: 18px;
+}
+.menu .cond b {
+  color: var(--gold);
+  font-weight: normal;
 }
 .menu .blink {
   animation: blink 0.8s steps(2) infinite;

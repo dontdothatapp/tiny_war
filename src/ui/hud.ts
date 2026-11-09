@@ -38,6 +38,9 @@ export interface HudData {
   xp: number;
   xpNext: number;
   sector: number;
+  /** credit multiplier from the kill streak (1 = no streak) and how much of its timer is left (0..1) */
+  streak: number;
+  streakLeft: number;
   warnings: string[];
   objectives: HudObjective[];
 }
@@ -47,7 +50,7 @@ export interface RadarBlip {
   z: number;
   color: string;
   size?: number;
-  shape?: 'dot' | 'square' | 'diamond' | 'ring';
+  shape?: 'dot' | 'square' | 'diamond' | 'ring' | 'tri';
 }
 
 export const KEYBOARD_HELP = `W/S cyclic fwd/back · A/D cyclic left/right · Q/E turn · SPACE/SHIFT climb/descend<br>LMB cannon · RMB rockets (both fire straight ahead) · F missile · X flares · H assists · M map · P pixels · ESC pause`;
@@ -76,6 +79,8 @@ export class Hud {
   private mapImg: HTMLCanvasElement | null = null;
   private damageEl: HTMLElement;
   private helpEl: HTMLElement;
+  private streakEl: HTMLElement;
+  private floaters: { p: THREE.Vector3; text: string; color: string; t: number }[] = [];
   private sweep = 0;
   mapOpen = false;
 
@@ -92,6 +97,7 @@ export class Hud {
     this.statusEl = el('div', 'hud-panel hud-status', this.root);
     this.flightEl = el('div', 'hud-panel hud-flight', this.root);
     this.warnEl = el('div', 'hud-warn', this.root);
+    this.streakEl = el('div', 'hud-streak', this.root);
     this.msgEl = el('div', 'hud-msgs', this.root);
     this.helpEl = el('div', 'hud-help', this.root, KEYBOARD_HELP);
     this.mapEl = el('div', 'hud-map', this.root);
@@ -150,20 +156,17 @@ export class Hud {
   }
 
   update(d: HudData) {
-    const bar = (v: number, max: number, w = 14) => {
-      const n = Math.max(0, Math.min(w, Math.round((v / max) * w)));
-      return '█'.repeat(n) + '░'.repeat(w - n);
-    };
+    const bar = (v: number, max: number, cls = '') => `<span class="bar ${cls}"><i style="width:${Math.max(0, Math.min(100, (v / max) * 100)).toFixed(1)}%"></i></span>`;
     const hpPct = d.hp / d.maxHp;
     const fuelPct = d.fuel / d.maxFuel;
     this.objEl.innerHTML =
       `<div class="t">SECTOR ${d.sector} · OBJECTIVES</div>` +
       d.objectives.map((o) => `<div class="${o.done ? 'done' : o.active ? 'active' : ''}">${o.done ? '■' : '□'} ${o.text}</div>`).join('');
     this.statusEl.innerHTML = `
-      <div class="row"><span>ARMOR</span><span class="${hpPct < 0.3 ? 'crit' : ''}">${bar(d.hp, d.maxHp)}</span><span>${Math.ceil(d.hp)}</span></div>
-      <div class="row"><span>FUEL&nbsp;</span><span class="${fuelPct < 0.2 ? 'crit' : ''}">${bar(d.fuel, d.maxFuel)}</span><span>${Math.ceil((d.fuel / d.maxFuel) * 100)}%</span></div>
+      <div class="row"><span>ARMOR</span>${bar(d.hp, d.maxHp, hpPct < 0.3 ? 'crit' : '')}<span class="num">${Math.ceil(d.hp)}</span></div>
+      <div class="row"><span>FUEL&nbsp;</span>${bar(d.fuel, d.maxFuel, fuelPct < 0.2 ? 'crit' : '')}<span class="num">${Math.ceil((d.fuel / d.maxFuel) * 100)}%</span></div>
       <div class="row w"><span>GUN ${String(d.gun).padStart(4, ' ')}</span><span>RKT ${String(d.rockets).padStart(2, ' ')}</span>${d.maxMissiles ? `<span>MSL ${d.missiles}</span>` : ''}${d.maxFlares ? `<span>FLR ${d.flares}</span>` : ''}</div>
-      <div class="row"><span>LV ${String(d.level).padEnd(2, ' ')}</span><span class="xp">${bar(d.xp, d.xpNext)}</span><span>XP</span></div>
+      <div class="row"><span>LV ${String(d.level).padEnd(3, ' ')}</span>${bar(d.xp, d.xpNext, 'xp')}<span class="num">XP</span></div>
       <div class="row w"><span>CREW ${d.crew}/${d.cabin}</span><span>WT ${Math.round(d.mass)}</span><span>CR ${d.credits}${d.pending ? ` <b>+${d.pending}</b>` : ''}</span></div>`;
     const hdg = Math.round((((-d.heading * 180) / Math.PI) % 360 + 360) % 360);
     const windArrow = '↑↗→↘↓↙←↖'[Math.round((((d.windDir / (Math.PI * 2)) % 1) + 1) * 8) % 8];
@@ -174,6 +177,8 @@ export class Hud {
       <div class="row"><span>SAS</span><span class="${d.assists ? '' : 'crit'}">${d.assists ? 'ON' : 'OFF'}</span><span>WND</span><span>${windArrow}${Math.round(d.windSpeed * 1.8)}</span></div>`;
     // '~' prefix = informational (green), everything else is a red warning
     this.warnEl.innerHTML = d.warnings.map((w) => (w.startsWith('~') ? `<div class="info">${w.slice(1)}</div>` : `<div>${w}</div>`)).join('');
+    this.streakEl.style.display = d.streak > 1 ? '' : 'none';
+    if (d.streak > 1) this.streakEl.innerHTML = `STREAK <b>×${d.streak.toFixed(1)}</b><span class="bar"><i style="width:${(d.streakLeft * 100).toFixed(0)}%"></i></span>`;
   }
 
   drawRadar(cx: number, cz: number, heading: number, range: number, blips: RadarBlip[], dt: number) {
@@ -212,7 +217,7 @@ export class Hud {
       let px = dx,
         pz = dz;
       if (d > 1) {
-        if (b.shape !== 'diamond' && b.shape !== 'ring') continue;
+        if (b.shape !== 'diamond' && b.shape !== 'ring' && b.shape !== 'tri') continue;
         px /= d;
         pz /= d;
       }
@@ -222,7 +227,14 @@ export class Hud {
       c.strokeStyle = b.color;
       const s = b.size ?? 3;
       if (b.shape === 'square') c.fillRect(x - s, y - s, s * 2, s * 2);
-      else if (b.shape === 'diamond') {
+      else if (b.shape === 'tri') {
+        c.beginPath();
+        c.moveTo(x, y - s - 1);
+        c.lineTo(x + s + 1, y + s);
+        c.lineTo(x - s - 1, y + s);
+        c.closePath();
+        c.fill();
+      } else if (b.shape === 'diamond') {
         c.beginPath();
         c.moveTo(x, y - s - 1);
         c.lineTo(x + s + 1, y);
@@ -272,7 +284,14 @@ export class Hud {
       c.strokeStyle = b.color;
       const s = (b.size ?? 3) + 1;
       if (b.shape === 'square') c.fillRect(x - s, y - s, s * 2, s * 2);
-      else if (b.shape === 'ring') {
+      else if (b.shape === 'tri') {
+        c.beginPath();
+        c.moveTo(x, y - s - 2);
+        c.lineTo(x + s + 2, y + s + 1);
+        c.lineTo(x - s - 2, y + s + 1);
+        c.closePath();
+        c.fill();
+      } else if (b.shape === 'ring') {
         c.lineWidth = 2;
         c.beginPath();
         c.arc(x, y, s + 3, 0, Math.PI * 2);
@@ -429,6 +448,64 @@ export class Hud {
       c.fill();
       c.fillText(label, px - c.measureText(label).width / 2, py - 26);
     }
+  }
+
+  /** Small health bar (under a target bracket). */
+  healthBar(x: number, y: number, w: number, frac: number, color: string) {
+    const c = this.ctx2d;
+    c.fillStyle = 'rgba(8,16,9,0.75)';
+    c.fillRect(x - w / 2 - 1, y - 1, w + 2, 6);
+    c.fillStyle = color;
+    c.fillRect(x - w / 2, y, Math.max(0, Math.min(1, frac)) * w, 4);
+  }
+
+  /** Red arc around the aircraft pointing at where a hit came from. */
+  hitArc(x: number, y: number, angle: number, alpha: number) {
+    const c = this.ctx2d;
+    c.strokeStyle = `rgba(255,70,50,${(alpha * 0.85).toFixed(3)})`;
+    c.lineWidth = 5;
+    c.beginPath();
+    c.arc(x, y, 78, angle - 0.32, angle + 0.32);
+    c.stroke();
+    c.lineWidth = 2;
+    c.beginPath();
+    c.arc(x, y, 86, angle - 0.2, angle + 0.2);
+    c.stroke();
+  }
+
+  /** Floating text that rises from a world position (kill rewards). */
+  floater(p: THREE.Vector3, text: string, color: string) {
+    if (this.floaters.length > 12) this.floaters.shift();
+    this.floaters.push({ p: p.clone(), text, color, t: 0 });
+  }
+
+  drawFloaters(cam: THREE.Camera, dt: number) {
+    const c = this.ctx2d;
+    const sp = { x: 0, y: 0, behind: false };
+    c.font = '24px "VT323", monospace';
+    for (let i = this.floaters.length - 1; i >= 0; i--) {
+      const f = this.floaters[i];
+      f.t += dt;
+      if (f.t > 1.5) {
+        this.floaters.splice(i, 1);
+        continue;
+      }
+      this.project(f.p, cam, sp);
+      if (sp.behind) continue;
+      const k = f.t / 1.5;
+      const x = sp.x - c.measureText(f.text).width / 2,
+        y = sp.y - 18 - (1 - (1 - k) * (1 - k)) * 46;
+      c.globalAlpha = k < 0.7 ? 1 : 1 - (k - 0.7) / 0.3;
+      c.fillStyle = 'rgba(0,0,0,0.8)';
+      c.fillText(f.text, x + 2, y + 2);
+      c.fillStyle = f.color;
+      c.fillText(f.text, x, y);
+    }
+    c.globalAlpha = 1;
+  }
+
+  clearFloaters() {
+    this.floaters.length = 0;
   }
 
   ring(x: number, y: number, r: number, color: string) {

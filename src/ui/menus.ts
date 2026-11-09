@@ -10,6 +10,11 @@ export interface BriefingInfo {
   rescues: number;
   threats: string[];
   wind: string;
+  /** time of day / weather, and what it changes (may be empty) */
+  conditions: string;
+  conditionsNote: string;
+  /** vehicles in the supply convoy (0 = none this sector) */
+  convoy: number;
 }
 
 export interface DebriefInfo {
@@ -164,6 +169,7 @@ export class Menus {
          <div><b>FIGHT</b> weapons fire straight ahead and auto-range onto the first target in front of the nose · LMB cannon · RMB rockets · F missile · X flares</div>
          <div><b>CONTROLLER</b> ${pad.connected ? `<span class="pad-name">${pad.name}</span> · ${pad.help}` : 'plug in any gamepad and press a button · left stick flies, right stick turns, triggers fire'}</div>
          <div><b>LOGISTICS</b> hover low over crates or land next to them · land at downed crews to board them · land on the FARP pad to refuel, rearm, bank credits</div>
+         <div><b>THREATS</b> gunships hunt you and are scrambled when the last target falls; they keep clear of the FARP · convoys cross the highway · every sector has its own time of day</div>
          <div><b>PROGRESS</b> earn XP in flight: every level offers 1 of 3 upgrades for this run · spend credits in the hangar shop for permanent upgrades</div>
          <div class="dim">Best sector reached: ${save.bestSector} · Runs flown: ${save.runs} · Crew rescued: ${save.rescuedTotal}</div>
        </div>`,
@@ -181,12 +187,13 @@ export class Menus {
     this.show(
       `<div class="h">SECTOR ${b.sector} BRIEFING</div>
        <div class="dim">Theatre ${b.size}×${b.size} · seed ${b.seed} · wind ${b.wind}</div>
+       <div class="cond"><b>${b.conditions}</b>${b.conditionsNote ? ` · ${b.conditionsNote}` : ''}</div>
        <div class="cols">
         <div><div class="t">PRIMARY</div>${b.objectives.map((o) => `<div>□ ${o}</div>`).join('')}</div>
-        <div><div class="t">SECONDARY</div><div>□ Rescue ${b.rescues} downed crews (red smoke)</div><div>□ Winch supply crates</div>
+        <div><div class="t">SECONDARY</div><div>□ Rescue ${b.rescues} downed crews (red smoke)</div>${b.convoy ? `<div>□ Stop the supply convoy (${b.convoy} vehicles on the highway)</div>` : ''}<div>□ Winch supply crates</div>
         <div class="t" style="margin-top:12px">THREATS</div>${b.threats.map((t) => `<div>▲ ${t}</div>`).join('')}</div>
        </div>
-       <div class="dim">Credits are carried until you land on the FARP pad. Lose the aircraft and you lose what you carry.</div>
+       <div class="dim">Credits are carried until you land on the FARP pad. Lose the aircraft and you lose what you carry. Kills in quick succession build a streak worth up to ×2 credits.</div>
        <div class="btns"><button class="b-primary" data-a="go">LAUNCH ▸</button></div>`,
       'briefing',
     );

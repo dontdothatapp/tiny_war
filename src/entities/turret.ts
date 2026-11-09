@@ -216,6 +216,7 @@ export class Turret {
   yaw: number;
   pitch = 0.2;
   hp: number;
+  maxHp: number;
   alive = true;
   /** for projectile direct-hit tests */
   readonly hitTarget: { pos: THREE.Vector3; radius: number; alive: boolean };
@@ -243,11 +244,14 @@ export class Turret {
     yaw: number,
     readonly baseId: number,
     difficulty: number,
+    /** conditions: multiplier on how far the crew can see (night, sandstorm) */
+    sight = 1,
   ) {
     this.spec = { ...TURRET_SPECS[type] };
+    this.spec.range *= sight;
     this.spec.damage *= 1 + 0.12 * difficulty;
     this.spec.spread *= Math.max(0.55, 1 - 0.08 * difficulty);
-    this.hp = this.spec.hp * (1 + 0.1 * difficulty);
+    this.hp = this.maxHp = this.spec.hp * (1 + 0.1 * difficulty);
     this.yaw = yaw;
     const p = parts(type);
     this.radius = p.radius;

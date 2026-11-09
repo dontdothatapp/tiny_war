@@ -1,6 +1,6 @@
 # TINY WAR
 
-A browser tech demo for a roguelike attack-helicopter game: a top-down view with some perspective, a desert setting, voxel art, and terrain you can destroy completely. Flying is closer to a simulator than an arcade game. Each run is a series of procedurally generated sectors. In each sector you destroy the enemy bases, rescue downed crews and manage fuel and ammo. Between sectors you buy permanent upgrades.
+A browser tech demo for a roguelike attack-helicopter game: a top-down view with some perspective, a desert setting, voxel art, and terrain you can destroy completely. Flying is closer to a simulator than an arcade game. Each run is a series of procedurally generated sectors. In each sector you destroy the enemy bases, rescue downed crews and manage fuel and ammo, while enemy gunships hunt you and supply convoys cross the highway. Every sector has its own time of day: midday, dusk, night, a sandstorm, dawn. Between sectors you buy permanent upgrades.
 
 ![stack](https://img.shields.io/badge/stack-TypeScript%20%2B%20three.js%20%2B%20Vite-6b6b3e)
 
@@ -12,7 +12,7 @@ npm run dev        # http://localhost:5173
 npm run build      # static build in dist/ (host anywhere: GitHub Pages, itch.io, S3…)
 ```
 
-You need a desktop browser with WebGL2. The build is about 720 KB of JS (about 200 KB gzipped) plus about 3 MB of audio. There are no art files: every model and texture is generated in code.
+You need a desktop browser with WebGL2. The build is about 770 KB of JS (about 215 KB gzipped) plus about 3 MB of audio. There are no art files: every model and texture is generated in code.
 
 ## Sound
 
@@ -71,9 +71,16 @@ PlayStation controllers show ✕ ○ □ △ and L1/R1/L2/R2 labels instead. Som
 1. Take off from the **FARP**, your forward rearm and refuel pad.
 2. Destroy each enemy base's primary target: a radar site, command bunker, SAM battery, fuel depot or arms factory. The bases are defended by MG nests, AA guns, flak, SAMs and tanks. Sector 1 has a single base on a small map. Later sectors add more bases and get larger.
 3. Optionally, land beside the red smoke to pick up downed crews, then fly them home.
-4. Pick up supply crates (fuel, ammo, repairs) by hovering low and slow over them or by landing next to them. A label on the crate's marker tells you if you need to go lower or slow down. Some crates are hidden inside enemy buildings, so you have to blow the building open first.
-5. **Land on the FARP pad** to refuel, rearm and repair, and to **bank the credits you're carrying**. If you lose the aircraft, you lose the credits you were carrying.
-6. Once every primary target is destroyed, land at the FARP to clear the sector. The next sector is larger and better defended. Spend credits in the hangar between sectors.
+4. Optionally, stop the **supply convoy**. About 20 seconds into the sortie it sets off along the highway, and the objectives panel shows how long until it leaves the sector. Trucks drop a supply crate when destroyed, the escorts shoot back, and wiping out the whole convoy pays a bonus.
+5. Pick up supply crates (fuel, ammo, repairs) by hovering low and slow over them or by landing next to them. A label on the crate's marker tells you if you need to go lower or slow down. Some crates are hidden inside enemy buildings, so you have to blow the building open first.
+6. **Land on the FARP pad** to refuel, rearm and repair, and to **bank the credits you're carrying**. If you lose the aircraft, you lose the credits you were carrying.
+7. Once every primary target is destroyed, land at the FARP to clear the sector. Destroying the last target **scrambles an enemy gunship** (two from sector 4) that chases you home. Shoot it down or outrun it: gunships stay out of the FARP's air-defence umbrella. The next sector is larger and better defended. Spend credits in the hangar between sectors.
+
+**Gunships** are small grey scout helicopters. From sector 2 they also patrol over the bases. They fly gun runs: close in nose-on firing bursts, break away past you, come around and repeat. The gunner picks them up like any other target (the cannon leads them; rockets mostly miss, missiles don't), and the radar shows them as triangles that stick to the rim when they are out of range.
+
+**Kill streaks.** Each kill within 6 seconds of the last one adds 10% to the credits you earn, up to ×2. The streak and its timer show under the radar.
+
+**Conditions** change with the sector and are listed in the briefing: midday, dusk, night (enemy gunners pick you up 25% later, and your searchlight shows the ground ahead), sandstorm (strong wind; enemy sight and your radar are cut by a third) and dawn, then the cycle repeats. Add `?sky=day|dusk|night|storm|dawn` to the URL to fly any sector under a chosen sky.
 
 **Progression** has two parts:
 

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RNG } from '../core/rng';
 import { buildHeliVisual } from '../entities/heliModel';
+import { buildScoutVisual } from '../entities/mobiles';
 import { Pickup } from '../entities/pickups';
 import { Turret } from '../entities/turret';
 import { SceneRig } from '../game/scene';
@@ -45,6 +46,12 @@ function buildSet(set: string, seed: number): Item[] {
     h2.root.rotation.y = Math.PI * 0.75;
     h2.rotorBlur.visible = false;
     items.push({ label: 'attack helicopter (3/4)', obj: h2.root, w: 30, d: 34 });
+    for (const yaw of [0, Math.PI * 0.75]) {
+      const sc = buildScoutVisual(createVoxelMaterial({ localHash: true }));
+      sc.root.rotation.y = yaw;
+      sc.blur.visible = false;
+      items.push({ label: yaw ? 'enemy gunship (3/4)' : 'enemy gunship', obj: sc.root, w: 22, d: 26 });
+    }
     items.push(vox('downed helicopter', P.heliWreck(r())));
   } else if (set === 'units') {
     for (const t of ['mg', 'aaa', 'flak', 'sam', 'tank'] as TurretType[]) {

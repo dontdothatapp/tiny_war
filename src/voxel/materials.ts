@@ -152,7 +152,7 @@ const defs: Record<number, MaterialDef> = {
   [M.METAL_LIGHT]: { name: 'metal_light', color: 0xb3b5ae, hardness: 5, noise: 0.05 },
   [M.OLIVE_LIGHT]: { name: 'olive_light', color: 0x83844e, hardness: 5, noise: 0.07 },
   [M.TRACK]: { name: 'track', color: 0x3a3632, hardness: 6, noise: 0.12 },
-  [M.LAMP]: { name: 'lamp', color: 0xf4e7b4, hardness: 1, noise: 0.02 },
+  [M.LAMP]: { name: 'lamp', color: 0xf4e7b4, hardness: 1, noise: 0.02, emissive: true },
   [M.PALM_RING]: { name: 'palm_ring', color: 0x9b7752, hardness: 1.0, noise: 0.12, flammable: true },
   [M.PALM_DEAD]: { name: 'palm_dead', color: 0x9a7a44, hardness: 0.3, noise: 0.18, flammable: true, soft: true },
   [M.COCONUT]: { name: 'coconut', color: 0x6c4b26, hardness: 0.6, noise: 0.1, soft: true },

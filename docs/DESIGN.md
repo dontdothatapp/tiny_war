@@ -20,7 +20,10 @@ The brief: the game runs in the browser, uses voxels, and lets you destroy the w
 - **Greedy meshing with per-vertex ambient occlusion** (`mesher.ts`). Faces merge only when their AO is uniform, so lighting stays correct. Vertex data is packed (Uint8 position, normal and colour), which makes it about 4× smaller than float buffers.
 - **Shader:** the per-voxel colour noise comes from a world-space hash in the fragment shader, not from vertex colours. That gives the dithered old-school sand look and still lets large flat areas merge into a few quads. Light voxels use an emissive flag in the same pass.
 - **Streaming renderer** (`chunkRenderer.ts`): it meshes chunks in a radius around the camera focus, nearest first, within a per-frame time budget.
-- **Look:** a warm directional sun with soft shadows, a hemisphere light for ambient, sandy haze fog, and optional chunky-pixel rendering (render at ½ or ⅓ resolution and upscale with nearest-neighbour; **P** toggles it).
+- **Look:** a directional sun with soft shadows, a hemisphere light for ambient, haze fog, and optional chunky-pixel rendering (render at ½ or ⅓ resolution and upscale with nearest-neighbour; **P** toggles it).
+- **Post-processing** (`game/scene.ts`): the scene renders into a half-float target, then goes through bloom and a grade pass before the sRGB conversion. Lit surfaces stay below 1.0, so only things that are meant to glow reach the bloom threshold: fire and explosion particles, tracers (drawn at 2.6× their colour), lamp and nav-light voxels, shockwave rings. The grade pass applies tint, saturation, contrast and a vignette, plus a dust haze from the screen edges (sandstorm), a red edge pulse below 30% armour and a short white flash for big blasts near the camera. Bloom runs at the chunky-pixel resolution, so it costs little.
+- **Time of day and weather** (`game/atmosphere.ts`): a table of five themes (midday, dusk, night, sandstorm, dawn) sets sun colour, strength and direction, ambient, haze, grade, bloom strength, how bright smoke is, lamp glow, the nose searchlight and the ambient dust rate. Sectors cycle through them. Three of the values are rules, not looks: enemy sight range, wind strength and radar range. Fog is measured from the camera's focus distance, so zooming doesn't change the haze. `?sky=<id>` forces a theme.
+- **Cloud shadows** (`voxel/voxelMaterial.ts`): two octaves of value noise in world XZ, drifting downwind, multiply the surface colour. The edge is dithered with the per-voxel hash, so the shadow boundary is made of whole voxels and matches the art. All voxel materials share the same time, cloud and glow uniforms.
 
 ## 3. Destruction model
 
@@ -59,6 +62,13 @@ Thrust acts along the rotor axis, and the craft has mass, inertia and quadratic 
 - **Tank:** a slow, heavy shell. It can't elevate high, so flying high counters it.
 - Every emplacement needs **line of sight** through the voxel world, and takes a moment to react once it spots you. Buildings, mesas and dunes are real cover, and destroying cover changes the fight.
 
+Moving enemies (`src/entities/mobiles.ts`) are kinematic: they have no voxel physics, and the game applies damage, fires their shots and leaves their wrecks.
+
+- **Gunship:** a light scout helicopter (72 HP, 120 CR). It orbits a home point until the player comes within 320 voxels, then flies gun runs: it turns towards a lead point at up to 1.5 rad/s, fires 7-round bursts while the nose is within 10° and the line of fire is clear, breaks away to one side once inside 52 voxels, and comes around after about 2.4 s. It follows the terrain 30–72 voxels up and matches the player's altitude while fighting, which keeps it inside the cannon's elevation limits. When killed it spins down trailing smoke and explodes where it lands. It disengages when the player is within 150 voxels of the FARP pad, so landing to finish a sector is always possible.
+- **Patrols and the chase home:** from sector 2, one to three gunships patrol over the bases. Destroying the last primary target scrambles one more (two from sector 4) from the map edge furthest from the FARP. These chase from any distance. A sortie used to end the moment the last target fell; now the flight home is a fight.
+- **Convoy:** three to six vehicles (trucks, with a technical or APC escort) drive the longest stretch of highway that stays clear of compounds. They set off 22 seconds into the sortie, or as soon as one is hit, at a speed that gives roughly 100 seconds before the lead vehicle leaves the sector. Trucks drop a supply crate; escorts fire bursts when they have line of sight. Anything left on the road (wrecks, rubble) is knocked aside as they reach it, and they sink into craters instead of floating over them. Killing all of them pays a 200 CR bonus.
+- **Tested numbers:** against a hovering, passive player a sector-1 gunship did about 3.4 armour per second before its damage was cut by a fifth; with the nose held on it, the cannon shot it down in under two seconds at its original 52 HP, so it now has 72.
+
 The altitude trade-off is deliberate. Flying low (nap-of-the-earth) beats flak and SAMs but exposes you to guns and tanks. Flying high does the opposite.
 
 Player weapons:
@@ -79,6 +89,8 @@ Player weapons:
   - Altitude was abstracted away.
 
   Modern aim-assist practice adds three rules: keep the target the player is already tracking, ease rather than snap, and switch only on a clear improvement. Sources: [Sega-16 review](https://www.sega-16.com/2004/09/desert-strike-return-to-the-gulf/), [DOS manual](https://www.retrogames.cz/manualy/DOS/Desert_Strike_-_DOS_-_Manual.pdf), [Retro Looney review](https://retrolooney.co.uk/mega-drive-reviews/smd-desert-strike/), [Jungle Strike Game Gear review](https://gamefaqs.gamespot.com/gamegear/586720-jungle-strike/reviews/173307), [Overwatch aim-assist notes](https://eu.forums.blizzard.com/en/overwatch/t/console-aim-assist-updates/8697), [Insomniac aim-assist talk (GDC)](https://gdcvault.com/play/1017942/Techniques-for-Building-Aim-Assist).
+- **Moving targets:** for a gunship or convoy vehicle the designation point is a lead point (target position plus velocity × time of flight of a cannon round), so the same glide-to-target logic hits them. The bracket is drawn on the target itself. Rockets are too slow to hit a gunship reliably; missiles home on it.
+- **Target health:** the designation bracket carries a small bar: hit points for emplacements and mobiles, and for structures the remaining margin before collapse (`StructureTracker.integrity`).
 - **Ideas from the same research, not yet built:** different hit and miss impact colours, and choosing a co-pilot with gunner skill (tighter cone and faster lock) as an unlock.
 - **Chin cannon:** small high-explosive (HE) blasts. The turret slews toward the fire-control point.
 - **Rockets:** launched from the pods and dive onto the same point.
@@ -102,6 +114,8 @@ Player weapons:
 - **Hangar shop (permanent):** spend banked credits. Items appear gradually: four at the start (engine, armour, fuel, rockets), then missiles, ammo bay and cabin space at sector 2, then cannon HE, flares and thermobaric warheads at sector 3, then feed system and radar at sector 4. A teaser shows the next batch. Each new sector also raises the level caps.
 - **Supplies:** landing within about 18 voxels of a crate collects it (and any others in reach). So does hovering over it within 14 voxels horizontally, lower than 34 above it and slower than 22. The crate's marker says LOWER, SLOW DOWN or BLOCKED when you're close but not collecting.
 - **Camera:** the default zoom is wider. The camera aims at the aircraft's altitude, so the aircraft stays near the centre of the screen, and a smoothed look-ahead along your velocity shows more of what's ahead.
+- **Kill streak:** each kill within 6 seconds of the previous one adds 10% to credits earned, up to ×2 (XP is not multiplied). Emplacements, mobiles and enemy structures worth 15 CR or more count; walls don't.
+- **Feedback:** rewards float up from the kill, a red arc around the aircraft points at where a hit came from, base kills and gunship kills trigger a short slow-motion beat (0.3× for a fraction of a second, real-time countdown), and explosions add a ground shockwave ring, a white-hot core and a ring of kicked-up dust.
 - **Fail states:** the aircraft is destroyed, or you run out of fuel and land outside the FARP (stranded).
 
 The brief said there are no humans on the map. Downed crews are therefore shown only as red signal smoke and a strobe, never as figures. You land next to the smoke and they board. Tell me if you'd prefer visible survivors or captured soldiers in compounds.
@@ -126,9 +140,11 @@ src/
   voxel/     world (chunks), mesher, chunk renderer, material + shader,
              destruction, falling bodies, model meshing
   world/     map generator, prefabs (buildings, vehicles, palms…), VoxModel
-  entities/  helicopter (+voxel model), turrets, projectiles, pickups/rescue
+  entities/  helicopter (+voxel model), turrets, gunships + convoy vehicles,
+             projectiles, pickups/rescue
   fx/        cube particles (smoke/fire/glow), debris, explosion effects
-  game/      game loop/state, progression & save, structure integrity, scene rig
+  game/      game loop/state, progression & save, structure integrity,
+             scene rig + post-processing, time of day / weather
   ui/        HUD (DOM + overlay canvas, radar, map), menus (title, briefing, level-up, shop, debrief, pause)
 ```
 
@@ -154,12 +170,12 @@ src/
 **Gameplay ideas**
 - **Sling loads:** hook vehicles or containers and carry them, with the pendulum swing simulated and the weight affecting flight.
 - **Component damage** instead of a single HP bar. Tail rotor hits make the aircraft spin, engine fires cause power loss, damaged hydraulics make controls stiff, a cracked canopy limits the HUD. All of it can be repaired at the FARP.
-- **Run modifiers**, roguelike style: before each sector you pick one of three. Examples: *Sandstorm* (visibility and radar drop, but enemies can't see either), *Night op* (thermal FLIR view mode), *Heavy armor column* (moving convoys), or *Black market* (cheap upgrades, but no FARP repairs).
-- **Moving targets:** convoys driving the road network and patrol helicopters. Trains on a rail line make good set-piece targets.
+- **Run modifiers**, roguelike style: before each sector you pick one of three. Night and sandstorm exist now as fixed conditions per sector; the next step is letting the player choose, and adding ones that change the rules more, such as *Heavy armor column* or *Black market* (cheap upgrades, but no FARP repairs).
+- **More moving targets:** convoys that follow the whole road network and turn at junctions, tanks that move, heavier gunships that fire rockets. Trains on a rail line make good set-piece targets.
 - **Forward FARPs:** capture a cleared enemy base and turn it into a second rearm point. That shortens the logistics loop as the map grows.
 - **Intel pickups** that reveal SAM positions or hidden supply caches on the map.
 - **Wingman drone** (an upgrade) that marks targets or launches its own rockets.
-- **Weather and time of day:** dust devils that push the aircraft around, heat shimmer, sunset lighting.
+- **More weather:** dust devils that push the aircraft around, heat shimmer.
 - **Daily seed** with a leaderboard, so everyone flies the same procedurally generated theatre.
 - **Destruction-based scoring:** precision bonuses for collapsing a target with few munitions, and penalties for collateral damage in neutral towns.
 - **Bomb bay / thermobaric "door gun" variants** as alternative airframes, for example a transport helicopter with more seats and less firepower.

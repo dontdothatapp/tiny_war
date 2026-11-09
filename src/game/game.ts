@@ -7,6 +7,7 @@ import { DebrisSystem } from '../fx/debris';
 import { Effects } from '../fx/effects';
 import { ParticleSystem } from '../fx/particles';
 import { Helicopter, HeliControls } from '../entities/helicopter';
+import { GroundVehicle, Gunship, Mobile, MobileEnv, MobileShot } from '../entities/mobiles';
 import { PICKUP_COLOR, PICKUP_LABEL, Pickup, RescueSite } from '../entities/pickups';
 import { HitTarget, Projectile, Projectiles } from '../entities/projectiles';
 import { TURRET_SPECS, Turret } from '../entities/turret';
@@ -16,11 +17,14 @@ import { BodySystem } from '../voxel/bodies';
 import { ChunkRenderer } from '../voxel/chunkRenderer';
 import { Destruction } from '../voxel/destruction';
 import { M } from '../voxel/materials';
+import { voxelGlobals } from '../voxel/voxelMaterial';
 import { VoxelWorld } from '../voxel/world';
 import { MapGenerator, WORLD_HEIGHT } from '../world/generator';
-import type { BaseDef, MapData } from '../world/mapTypes';
+import type { BaseDef, MapData, PickupType } from '../world/mapTypes';
 import * as P from '../world/prefabs';
+import type { VoxModel } from '../world/voxModel';
 import { HeliStats, PerkDef, Perks, SaveData, UPGRADES, computeStats, level, levelCap, loadSave, rollPerks, upgradeCost, writeSave, xpToNext } from './progression';
+import { Atmosphere, atmosphereFor } from './atmosphere';
 import { SceneRig } from './scene';
 import { StructureState, StructureTracker } from './structures';
 
@@ -50,7 +54,6 @@ interface Ammo {
   flares: number;
 }
 
-const SUN_DIR = new THREE.Vector3(-0.5, 0.85, 0.35).normalize();
 /** Fire-control range (voxels). */
 const AIM_RANGE = 230;
 /** Gunner acquisition cone (half-angle) and the wider cone it keeps a target in. */
@@ -61,13 +64,31 @@ const SWITCH_DELAY = 0.35;
 
 /** Something the gunner has picked to shoot at. */
 interface Designation {
-  kind: 'turret' | 'structure';
+  kind: 'turret' | 'structure' | 'mobile';
   turret: Turret | null;
+  mobile: Mobile | null;
   sid: number;
   point: THREE.Vector3;
   label: string;
   objective: boolean;
 }
+
+/** A supply convoy driving the highway: an optional, timed target. */
+interface Convoy {
+  vehicles: GroundVehicle[];
+  total: number;
+  killed: number;
+  escaped: number;
+  /** seconds of flying before it sets off */
+  delay: number;
+  rolling: boolean;
+  done: boolean;
+  /** seconds until the lead vehicle leaves the sector */
+  eta: number;
+}
+
+/** Seconds a kill streak stays alive without another kill. */
+const STREAK_TIME = 6;
 
 export class Game {
   readonly rig: SceneRig;
@@ -97,6 +118,20 @@ export class Game {
   turrets: Turret[] = [];
   pickups: Pickup[] = [];
   rescues: RescueSite[] = [];
+  /** moving enemies: gunships and convoy vehicles */
+  mobiles: Mobile[] = [];
+  private convoy: Convoy | null = null;
+  /** gunships have been sent after the player for the trip home */
+  private scrambled = false;
+  /** kills in quick succession raise the credit multiplier */
+  private streakN = 0;
+  private streakT = 0;
+  /** real seconds of slow motion left (big kills) */
+  private slowT = 0;
+  /** where recent hits on the aircraft came from */
+  private hitArcs: { x: number; z: number; t: number }[] = [];
+  /** time of day / weather of the current sector */
+  atmo: Atmosphere = atmosphereFor(1);
   private sectorGroup = new THREE.Group();
   private heliTarget: HitTarget = { pos: new THREE.Vector3(), radius: 4.5, alive: true };
   private pendingBlasts: { t: number; x: number; y: number; z: number; r: number; p: number }[] = [];
@@ -132,6 +167,9 @@ export class Game {
   private hintPickup: Pickup | null = null;
   private pickupTipShown = false;
   private shake = 0;
+  /** white screen flash from a big blast close to the camera (decays) */
+  private screenFlash = 0;
+  private dustT = 0;
   private sectorCleared = false;
   private overT = 0;
   private overReason = '';
@@ -328,6 +366,8 @@ export class Game {
     this.audio.music('hangar');
     const threats = new Set<string>();
     for (const t of this.map.turrets) threats.add(TURRET_SPECS[t.type].name + 's');
+    if (this.mobiles.some((m) => m.air)) threats.add('Gunship patrols');
+    threats.add('Gunships scramble once the last target falls');
     const w = this.windVec();
     this.menus.briefing(
       {
@@ -338,6 +378,9 @@ export class Game {
         rescues: this.map.rescues.length,
         threats: [...threats],
         wind: `${Math.round(w.length() * 1.8)} km/h`,
+        conditions: this.atmo.name,
+        conditionsNote: this.atmo.note,
+        convoy: this.convoy?.total ?? 0,
       },
       () => this.launch(),
     );
@@ -419,7 +462,7 @@ export class Game {
         lines: [
           ['Sectors cleared', String(r.sectorsCleared)],
           ['Reached sector', String(r.sector)],
-          ['Enemy emplacements destroyed', String(r.kills)],
+          ['Enemy units destroyed', String(r.kills)],
           ['Structures destroyed', String(r.structures)],
           ['Crew rescued', String(r.rescued)],
           ['Credits banked this run', `${r.earned} CR`],
@@ -459,7 +502,7 @@ export class Game {
           ['Sector bonus', `${bonus} CR`],
           ['All crews recovered', rescueBonus ? `${rescueBonus} CR` : '—'],
           ['Credits banked this run', `${r.earned} CR`],
-          ['Emplacements destroyed', String(r.kills)],
+          ['Enemy units destroyed', String(r.kills)],
           ['Crew rescued', String(r.rescued)],
           ['Run level', `${r.level}`],
         ],
@@ -478,6 +521,8 @@ export class Game {
     this.turrets = [];
     this.pickups = [];
     this.rescues = [];
+    this.mobiles = [];
+    this.convoy = null;
     this.pendingBlasts = [];
     this.projectiles?.clear();
     this.debris?.clear();
@@ -498,11 +543,15 @@ export class Game {
     this.world.filler = this.gen;
     this.chunks = new ChunkRenderer(this.world);
     this.sectorGroup.add(this.chunks.group);
+    this.atmo = atmosphereFor(sector);
+    this.rig.applyAtmosphere(this.atmo);
     const fog = this.rig.scene.fog as THREE.Fog;
     this.debris = new DebrisSystem(this.world);
     this.sectorGroup.add(this.debris.mesh);
-    this.smoke = new ParticleSystem(4000, SUN_DIR, fog);
-    this.glow = new ParticleSystem(2500, SUN_DIR, fog);
+    this.smoke = new ParticleSystem(4000, this.rig.sunDir, fog);
+    this.glow = new ParticleSystem(2500, this.rig.sunDir, fog);
+    this.smoke.setLight(...this.atmo.particleLight);
+    this.glow.setLight(...this.atmo.particleLight);
     this.sectorGroup.add(this.smoke.mesh, this.glow.mesh);
     this.bodies = new BodySystem(this.world, this.debris, this.smoke);
     this.sectorGroup.add(this.bodies.group);
@@ -532,9 +581,15 @@ export class Game {
     for (const t of this.turrets) this.sectorGroup.remove(t.root);
     for (const p of this.pickups) this.sectorGroup.remove(p.obj);
     for (const r of this.rescues) this.sectorGroup.remove(r.beacon);
+    for (const m of this.mobiles) this.sectorGroup.remove(m.root);
+    this.mobiles = [];
+    this.scrambled = false;
+    this.streakN = this.streakT = 0;
+    this.hitArcs.length = 0;
+    this.hud.clearFloaters();
     const diff = this.map.sector - 1;
     this.turrets = this.map.turrets.map((t) => {
-      const tu = new Turret(t.type, new THREE.Vector3(t.x, t.y, t.z), t.yaw, t.baseId, diff);
+      const tu = new Turret(t.type, new THREE.Vector3(t.x, t.y, t.z), t.yaw, t.baseId, diff, this.atmo.sight);
       this.sectorGroup.add(tu.root);
       return tu;
     });
@@ -548,7 +603,14 @@ export class Game {
       this.sectorGroup.add(rs.beacon);
       return rs;
     });
-    this.projectiles.enemyTargets = this.turrets.map((t) => t.hitTarget);
+    // air patrols over the bases from sector 2, and a convoy on the highway
+    const nPatrol = this.map.sector >= 2 ? Math.min(3, Math.floor(this.map.sector / 2)) : 0;
+    for (let i = 0; i < nPatrol && this.map.bases.length; i++) {
+      const b = this.map.bases[i % this.map.bases.length];
+      this.spawnGunship(b.x + (i % 2 ? 40 : -40), b.z - 30, false);
+    }
+    this.convoy = this.planConvoy();
+    this.refreshTargets();
     this.objectiveTurrets = new Set(this.map.bases.flatMap((b) => b.objectives.filter((o) => o.kind === 'turret').map((o) => this.turrets[o.index])));
     this.objectiveStructures = new Set(this.map.bases.flatMap((b) => b.objectives.filter((o) => o.kind === 'structure').map((o) => o.index)));
     this.desig = this.desigCand = null;
@@ -560,6 +622,11 @@ export class Game {
     const f = this.map.farp;
     this.heli.reset(f.padX, f.y, f.padZ, 0);
     this.heli.wind.copy(this.windVec());
+    // clouds drift downwind (a little faster than the surface wind so they read as moving)
+    const drift = this.heli.wind.clone().multiplyScalar(1.6);
+    if (drift.length() < 4) drift.setLength(4);
+    voxelGlobals.uCloud.value.z = -drift.x;
+    voxelGlobals.uCloud.value.w = -drift.z;
     this.ammo = { gun: this.stats.gunAmmo, rockets: this.stats.rockets, missiles: this.stats.missiles, flares: this.stats.flares };
     this.sectorCleared = false;
     this.heliTarget.alive = true;
@@ -571,15 +638,18 @@ export class Game {
   private windVec() {
     const r = new RNG(this.map.seed * 3 + this.map.sector);
     const a = r.range(0, Math.PI * 2);
-    const s = r.range(1, 3 + this.map.sector * 1.5);
+    const s = r.range(1, 3 + this.map.sector * 1.5) * this.atmo.wind;
     return new THREE.Vector3(Math.cos(a) * s, 0, Math.sin(a) * s);
   }
 
   // ======================================================================== main update
 
   update(dtRaw: number) {
-    const dt = Math.min(dtRaw, 1 / 20);
+    // brief slow motion on big kills (real-time countdown, eases back to full speed)
+    this.slowT = Math.max(0, this.slowT - dtRaw);
+    const dt = Math.min(dtRaw, 1 / 20) * (this.slowT > 0 ? lerp(1, 0.3, Math.min(1, this.slowT / 0.2)) : 1);
     this.fps = lerp(this.fps, 1 / Math.max(1e-3, dtRaw), 0.05);
+    if (this.state !== 'paused' && this.state !== 'levelup') voxelGlobals.uTime.value += dt;
     this.world.frame++;
     const inp = this.input;
     this.pollInput();
@@ -602,6 +672,8 @@ export class Game {
       const f = this.map.farp;
       const t = this.titleT * 0.04;
       this.camFocus.set(f.x + Math.sin(t) * 120, f.y, f.z - 120 - Math.cos(t * 0.7) * 80);
+      this.updateMobiles(dt);
+      this.projectiles.update(dt);
       this.updateWorldSystems(dt);
     }
     // engine/rotor loops only while flying (silent in pause, level-up and menus)
@@ -741,6 +813,9 @@ export class Game {
 
     // world + entities
     this.updateTurrets(dt);
+    this.updateMobiles(dt);
+    this.streakT = Math.max(0, this.streakT - dt);
+    if (this.streakT <= 0) this.streakN = 0;
     this.projectiles.update(dt);
     this.updateWorldSystems(dt);
     this.updatePickupsVisual(dt);
@@ -829,10 +904,11 @@ export class Game {
   }
 
   private sameTarget(a: Designation, b: Designation): boolean {
-    return a.kind === b.kind && (a.kind === 'turret' ? a.turret === b.turret : a.sid === b.sid);
+    return a.kind === b.kind && (a.kind === 'turret' ? a.turret === b.turret : a.kind === 'mobile' ? a.mobile === b.mobile : a.sid === b.sid);
   }
 
   private desigValid(t: Designation): boolean {
+    if (t.kind === 'mobile') return !!t.mobile?.alive;
     return t.kind === 'turret' ? !!t.turret?.alive : !this.tracker.states[t.sid].destroyed;
   }
 
@@ -847,6 +923,7 @@ export class Game {
     if (ang > cone) return Infinity;
     let score = (ang / ACQUIRE_CONE) * 100 + dist * 0.15;
     if (t.kind === 'turret') score -= t.turret!.hasLOS ? 35 : 15; // active threats first
+    else if (t.kind === 'mobile') score -= t.mobile!.hunting ? 45 : t.mobile!.air ? 25 : 12;
     if (t.objective) score -= 15;
     return score;
   }
@@ -866,7 +943,13 @@ export class Game {
     for (const t of this.turrets) {
       if (!t.alive) continue;
       if (Math.abs(t.center.x - h.pos.x) > AIM_RANGE || Math.abs(t.center.z - h.pos.z) > AIM_RANGE) continue;
-      consider({ kind: 'turret', turret: t, sid: -1, point: t.center, label: t.spec.name.toUpperCase(), objective: this.objectiveTurrets.has(t) });
+      consider({ kind: 'turret', turret: t, mobile: null, sid: -1, point: t.center, label: t.spec.name.toUpperCase(), objective: this.objectiveTurrets.has(t) });
+    }
+    // moving targets: the gunner aims at a lead point that tracks them
+    for (const m of this.mobiles) {
+      if (!m.alive) continue;
+      if (Math.abs(m.center.x - h.pos.x) > AIM_RANGE || Math.abs(m.center.z - h.pos.z) > AIM_RANGE) continue;
+      consider({ kind: 'mobile', turret: null, mobile: m, sid: -1, point: m.aimPoint, label: m.spec.label, objective: false });
     }
     for (const st of this.tracker.states) {
       const def = st.def;
@@ -876,7 +959,7 @@ export class Game {
       if (Math.abs(cx - h.pos.x) > AIM_RANGE || Math.abs(cz - h.pos.z) > AIM_RANGE) continue;
       // aim low on the structure: knocking out the base brings it down
       const y = def.y0 + Math.min(5, (def.y1 - def.y0) * 0.35);
-      consider({ kind: 'structure', turret: null, sid: def.id, point: new THREE.Vector3(cx, y, cz), label: def.label.toUpperCase(), objective: this.objectiveStructures.has(def.id) });
+      consider({ kind: 'structure', turret: null, mobile: null, sid: def.id, point: new THREE.Vector3(cx, y, cz), label: def.label.toUpperCase(), objective: this.objectiveStructures.has(def.id) });
     }
     return best;
   }
@@ -966,7 +1049,7 @@ export class Game {
       } else {
         this.ammo.missiles--;
         const t = this.desig;
-        const targetRef = t.kind === 'turret' ? t.turret!.hitTarget : { pos: t.point.clone(), alive: true };
+        const targetRef = t.kind === 'turret' ? t.turret!.hitTarget : t.kind === 'mobile' ? t.mobile!.hitTarget : { pos: t.point.clone(), alive: true };
         const p = h.podWorld(this.podLeft, new THREE.Vector3());
         p.y -= 1;
         this.podLeft = !this.podLeft;
@@ -1029,6 +1112,7 @@ export class Game {
       this.fx.explosion(x, y, z, r, o.airburst);
       this.audio.explosion(x, z, r);
       this.addShake(x, z, Math.min(1, r / 6));
+      if (r >= 3.5) this.screenFlash = Math.max(this.screenFlash, clamp((r - 2.5) / 10, 0, 0.6) * clamp(1 - Math.hypot(x - this.camFocus.x, z - this.camFocus.z) / 260, 0, 1));
     }
     const dmg = o.dmg ?? power * 3;
     // turrets
@@ -1044,11 +1128,24 @@ export class Game {
         if (t.hp <= 0) this.killTurret(t);
       }
     }
+    // gunships and convoy vehicles
+    for (const m of this.mobiles) {
+      if (!m.alive) continue;
+      const d = m.center.distanceTo(new THREE.Vector3(x, y, z)) - m.spec.radius;
+      let amount = 0;
+      if (o.direct === m.hitTarget) amount = dmg;
+      else if (d < r) amount = dmg * clamp(1 - d / r, 0.15, 1) * 0.8;
+      if (amount > 0) {
+        m.hp -= amount;
+        m.flash = 1;
+        if (m.hp <= 0) this.killMobile(m);
+      }
+    }
     // heli (self-damage too)
     const h = this.heli;
     if (!h.dead) {
       const d = h.pos.clone().add(new THREE.Vector3(0, 3, 0)).distanceTo(new THREE.Vector3(x, y, z)) - 4;
-      if (d < r) this.damageHeli(dmg * 0.5 * clamp(1 - d / r, 0.1, 1), 'blast');
+      if (d < r) this.damageHeli(dmg * 0.5 * clamp(1 - d / r, 0.1, 1), 'blast', x, z);
     }
     // pickups are fragile
     for (const p of this.pickups) {
@@ -1076,7 +1173,7 @@ export class Game {
         this.explode(x, y, z, p.radius, p.power, { dmg: p.damage, direct });
         break;
       case 'ebullet':
-        if (direct === this.heliTarget) this.damageHeli(p.damage, 'gunfire');
+        if (direct === this.heliTarget) this.damageHeli(p.damage, 'gunfire', x - p.vel.x, z - p.vel.z);
         else {
           this.destruction.explode(x, y, z, 1.1, 1.6, { debris: 0.3, scorch: false, speed: 0.5 });
           this.fx.impactPuff(x, y, z);
@@ -1089,23 +1186,33 @@ export class Game {
         this.fx.explosion(x, y, z, 3, true);
         this.audio.explosion(x, z, 4);
         const d = this.heli.pos.distanceTo(new THREE.Vector3(x, y, z));
-        if (d < 13 && !this.heli.dead) this.damageHeli(p.damage * (1 - d / 13), 'flak');
+        if (d < 13 && !this.heli.dead) this.damageHeli(p.damage * (1 - d / 13), 'flak', x, z);
         break;
       }
       case 'sam': {
         const nearGround = this.world.solidAt(x, y - 2, z);
         this.explode(x, y, z, 4, 8, { dmg: 0, carve: nearGround, airburst: !nearGround });
         const d = this.heli.pos.distanceTo(new THREE.Vector3(x, y, z));
-        if (d < 10 && !this.heli.dead) this.damageHeli(p.damage * (1 - d / 14), 'missile');
+        if (d < 10 && !this.heli.dead) this.damageHeli(p.damage * (1 - d / 14), 'missile', x, z);
         break;
       }
     }
   }
 
-  private damageHeli(amount: number, cause: string) {
+  /** `fromX/fromZ`: where the hit came from, for the direction indicator. */
+  private damageHeli(amount: number, cause: string, fromX?: number, fromZ?: number) {
     const h = this.heli;
     if (h.dead || amount <= 0 || this.state !== 'playing') return;
     amount *= this.stats.damageMul;
+    if (fromX !== undefined && fromZ !== undefined && Math.hypot(fromX - h.pos.x, fromZ - h.pos.z) > 6) {
+      const last = this.hitArcs[this.hitArcs.length - 1];
+      // bursts from one gun refresh the same arc instead of stacking
+      if (last && Math.hypot(last.x - fromX, last.z - fromZ) < 40) last.t = 0;
+      else {
+        if (this.hitArcs.length >= 6) this.hitArcs.shift();
+        this.hitArcs.push({ x: fromX, z: fromZ, t: 0 });
+      }
+    }
     h.hp -= amount;
     h.shake = Math.max(h.shake, Math.min(1, amount / 25));
     this.rumble(Math.min(1, 0.25 + amount / 25), 0.6, Math.min(500, 120 + amount * 8));
@@ -1118,6 +1225,7 @@ export class Game {
       h.engineOn = false;
       this.audio.crash();
       this.hud.message(`AIRCRAFT LOST — ${cause.toUpperCase()}`, '#ff5a4a', 4000);
+      this.slowT = 0.9;
       if (h.onGround) this.heliDestroyed();
     }
   }
@@ -1133,16 +1241,7 @@ export class Game {
     // wreck voxels
     const wreck = P.heliWreck(new RNG(1));
     wreck.replace(M.OLIVE_DARK, M.WRECK);
-    for (let y = 0; y < wreck.sy; y++)
-      for (let z = 0; z < wreck.sz; z++)
-        for (let x = 0; x < wreck.sx; x++) {
-          const m = wreck.get(x, y, z);
-          if (!m) continue;
-          const wx = Math.floor(h.pos.x - wreck.sx / 2 + x),
-            wz = Math.floor(h.pos.z - wreck.sz / 2 + z);
-          const wy = Math.floor(h.pos.y) + y;
-          if (this.world.get(wx, wy, wz) === 0) this.world.set(wx, wy, wz, m);
-        }
+    this.stampWreck(wreck, h.pos.x, h.pos.y, h.pos.z);
     if (this.state === 'playing') this.endRun('Aircraft destroyed', false);
   }
 
@@ -1161,20 +1260,246 @@ export class Game {
     if (t.type !== 'tank') {
       m.replace(M.PLASTER_WHITE, M.WRECK);
     }
-    const ox = Math.floor(t.pos.x - m.sx / 2),
-      oz = Math.floor(t.pos.z - m.sz / 2),
-      oy = Math.floor(t.pos.y);
-    for (let y = 0; y < m.sy; y++)
-      for (let z = 0; z < m.sz; z++)
-        for (let x = 0; x < m.sx; x++) {
-          const v = m.get(x, y, z);
-          if (v && this.world.get(ox + x, oy + y, oz + z) === 0) this.world.set(ox + x, oy + y, oz + z, v);
-        }
+    this.stampWreck(m, t.pos.x, t.pos.y, t.pos.z);
     if (this.run) {
       this.run.kills++;
-      this.addCredits(t.spec.reward, `${t.spec.name} destroyed`);
+      this.bumpStreak();
+      this.addCredits(t.spec.reward, `${t.spec.name} destroyed`, t.center);
     }
     this.checkObjectives();
+  }
+
+  // ======================================================================== gunships + convoy
+
+  private refreshTargets() {
+    this.projectiles.enemyTargets = [...this.turrets.map((t) => t.hitTarget), ...this.mobiles.filter((m) => m.alive).map((m) => m.hitTarget)];
+  }
+
+  private spawnGunship(x: number, z: number, alerted: boolean): Gunship {
+    const S = this.map.size;
+    x = clamp(x, 20, S - 20);
+    z = clamp(z, 20, S - 20);
+    const g = new Gunship(x, this.map.heights[Math.floor(x) + Math.floor(z) * S] + 38, z, this.map.sector - 1);
+    g.alerted = alerted;
+    this.mobiles.push(g);
+    this.sectorGroup.add(g.root);
+    return g;
+  }
+
+  /** Send gunships in from the map edge furthest from home to chase the player down. */
+  private scrambleGunships(n: number) {
+    const S = this.map.size;
+    const h = this.heli.pos;
+    const f = this.map.farp;
+    const edge: [number, number][] = [
+      [S / 2, 30],
+      [30, 30],
+      [S - 30, 30],
+      [30, S / 2],
+      [S - 30, S / 2],
+    ];
+    const score = ([x, z]: [number, number]) => Math.hypot(x - f.padX, z - f.padZ) + (Math.hypot(x - h.x, z - h.z) > 330 ? 2000 : 0);
+    edge.sort((a, b) => score(b) - score(a));
+    for (let i = 0; i < n; i++) this.spawnGunship(edge[i % edge.length][0] + i * 30, edge[i % edge.length][1], true);
+    this.refreshTargets();
+    this.hud.message(n > 1 ? `▲ ${n} ENEMY GUNSHIPS SCRAMBLED` : '▲ ENEMY GUNSHIP SCRAMBLED', '#ff5a8a', 5000);
+    this.hud.message('Shoot it down, or outrun it to the FARP', '#ff9ab8', 5000);
+  }
+
+  /** Lay out the supply convoy on the longest stretch of highway that is clear of compounds. */
+  private planConvoy(): Convoy | null {
+    const hw = this.map.roads.find((r) => r.w >= 6);
+    if (!hw) return null;
+    const S = this.map.size;
+    const f = this.map.farp;
+    const len = Math.hypot(hw.bx - hw.ax, hw.bz - hw.az);
+    const ux = (hw.bx - hw.ax) / len,
+      uz = (hw.bz - hw.az) / len;
+    const blocked = (x: number, z: number) =>
+      x < 16 || z < 16 || x > S - 16 || z > S - 16 || Math.hypot(f.x - x, f.z - z) < 120 || this.map.bases.some((b) => Math.hypot(b.x - x, b.z - z) < b.r + 26);
+    let best0 = 0,
+      best1 = 0,
+      start = -1;
+    for (let t = 0; t <= len + 8; t += 8) {
+      const open = t <= len && !blocked(hw.ax + ux * t, hw.az + uz * t);
+      if (open && start < 0) start = t;
+      if (!open && start >= 0) {
+        if (t - 8 - start > best1 - best0) {
+          best0 = start;
+          best1 = t - 8;
+        }
+        start = -1;
+      }
+    }
+    if (best1 - best0 < 260) return null;
+    const rng = new RNG(this.map.seed * 13 + this.map.sector * 7);
+    const flip = rng.chance(0.5);
+    const a = flip ? best1 : best0,
+      b = flip ? best0 : best1;
+    const path = { ax: hw.ax + ux * a, az: hw.az + uz * a, bx: hw.ax + ux * b, bz: hw.az + uz * b };
+    const sector = this.map.sector;
+    const n = clamp(3 + Math.floor(sector / 2), 3, 6);
+    const kinds: ('truck' | 'technical' | 'apc')[] = [];
+    for (let i = 0; i < n; i++) kinds.push(i === 0 ? (sector >= 3 ? 'apc' : 'technical') : i === n - 1 && n >= 5 ? 'technical' : 'truck');
+    const spacing = 30;
+    const speed = clamp((best1 - best0) / 105, 5, 9);
+    const vehicles = kinds.map((k, i) => new GroundVehicle(k, path, (n - 1 - i) * spacing + 4, speed, sector - 1, rng.int(0, 99999)));
+    for (const v of vehicles) {
+      this.mobiles.push(v);
+      this.sectorGroup.add(v.root);
+    }
+    return { vehicles, total: n, killed: 0, escaped: 0, delay: 22, rolling: false, done: false, eta: 0 };
+  }
+
+  private updateMobiles(dt: number) {
+    const cv = this.convoy;
+    if (!this.mobiles.length && !cv) return;
+    const h = this.heli;
+    const f = this.map.farp;
+    const env: MobileEnv = {
+      world: this.world,
+      heights: this.map.heights,
+      size: this.map.size,
+      target: h.pos,
+      targetVel: h.vel,
+      targetAlive: !h.dead && !h.crashed && this.state === 'playing',
+      farpX: f.padX,
+      farpZ: f.padZ,
+      sight: this.atmo.sight,
+    };
+    if (cv && !cv.rolling && this.state === 'playing') {
+      cv.delay -= dt;
+      // shooting at it while it is still forming up sets it off early
+      if (cv.delay <= 0 || cv.vehicles.some((v) => v.hp < v.maxHp)) {
+        cv.rolling = true;
+        for (const v of cv.vehicles) v.halted = false;
+        this.hud.message(`INTEL · SUPPLY CONVOY ON THE HIGHWAY (${cv.total} vehicles)`, '#ffd24a', 5500);
+        this.hud.message('Stop it before it leaves the sector — trucks drop supplies', '#e8d24a', 5500);
+      }
+    }
+    const shots: MobileShot[] = [];
+    let changed = false;
+    for (const m of this.mobiles) {
+      m.update(dt, env, shots);
+      if (m.alive) m.updateAim(h.pos, 300);
+      if (m instanceof Gunship) {
+        if (m.state === 'falling' && !m.removed && Math.random() < dt * 60) {
+          this.smoke.spawn({ x: m.pos.x, y: m.pos.y + 3, z: m.pos.z, vx: (Math.random() - 0.5) * 4, vy: 3, vz: (Math.random() - 0.5) * 4, life: 1.6, size0: 1.2, size1: 4.5, c0: 0x1f1c1a, c1: 0x57514a, a0: 0.85, a1: 0, drag: 1 });
+          if (Math.random() < 0.5) this.glow.spawn({ x: m.pos.x, y: m.pos.y + 3, z: m.pos.z, life: 0.25, size0: 1.6, size1: 0.3, c0: 0xffb040, c1: 0xc03010, emissive: 1 });
+        }
+        if (m.crashed) this.gunshipCrash(m);
+      } else if (m instanceof GroundVehicle) {
+        if (m.plow) {
+          this.destruction.explode(m.plow.x, m.plow.y, m.plow.z, 3.4, 6, { debris: 0.6, scorch: false, speed: 0.7 });
+          m.plow = null;
+        }
+        if (m.escaped && cv) cv.escaped++;
+      }
+      if (m.removed) {
+        this.sectorGroup.remove(m.root);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.mobiles = this.mobiles.filter((m) => !m.removed);
+      this.refreshTargets();
+    }
+    for (const sh of shots) {
+      this.projectiles.spawn({ kind: 'ebullet', pos: sh.pos, vel: sh.dir.multiplyScalar(sh.speed), life: 1.15, damage: sh.damage, color: 0xff5a6a });
+      this.fx.muzzle(sh.pos.x, sh.pos.y, sh.pos.z);
+      this.audio.enemyFire(sh.pos.x, sh.pos.z, 'mg');
+    }
+    if (cv && cv.rolling && !cv.done) {
+      const lead = cv.vehicles.find((v) => v.alive);
+      cv.eta = lead ? Math.hypot(lead.pos.x - lead.end.x, lead.pos.z - lead.end.z) / lead.speed : 0;
+      if (cv.killed + cv.escaped >= cv.total) {
+        cv.done = true;
+        if (cv.escaped === 0) {
+          this.hud.message('CONVOY WIPED OUT', '#9dff9a', 4000);
+          this.addCredits(200, 'Convoy bonus');
+        } else this.hud.message(`CONVOY ESCAPED · ${cv.killed}/${cv.total} destroyed`, '#ffb84a', 4000);
+      }
+    }
+  }
+
+  private killMobile(m: Mobile) {
+    if (!m.alive) return;
+    m.alive = false;
+    m.hitTarget.alive = false;
+    if (this.run) {
+      this.run.kills++;
+      this.bumpStreak();
+      this.addCredits(m.spec.reward, `${m.spec.label.toLowerCase().replace(/^./, (c) => c.toUpperCase())} destroyed`, m.center);
+    }
+    if (m instanceof Gunship) {
+      // hit in the air: a burst, then it spins in trailing smoke (gunshipCrash finishes it)
+      m.shootDown();
+      this.fx.explosion(m.center.x, m.center.y, m.center.z, 3, true);
+      this.audio.explosion(m.center.x, m.center.z, 4);
+      this.addShake(m.center.x, m.center.z, 0.4);
+      this.slowT = Math.max(this.slowT, 0.35);
+    } else {
+      m.removed = true;
+      this.sectorGroup.remove(m.root);
+      this.explode(m.center.x, m.center.y, m.center.z, 4.5, 8, { dmg: 0 });
+      this.fx.addFire(m.pos.x, m.pos.y, m.pos.z, 1.6, 18 + Math.random() * 14);
+      // burnt-out hull left on the road
+      const rng = new RNG(Math.floor(m.pos.x * 31 + m.pos.z));
+      const wreck = P.vehicle(rng, m.kind === 'gunship' ? 'truck' : m.kind, true);
+      // wreck models face +X: turn to the nearest quarter of the vehicle's heading
+      const w = wreck.rotated((Math.round(m.yaw / (Math.PI / 2)) + 4) & 3);
+      this.stampWreck(w, m.pos.x, m.pos.y, m.pos.z);
+      if (m.kind === 'truck') this.dropPickup(rng.pick(['fuel', 'ammo', 'ammo', 'repair'] as const), m.pos.x + rng.range(-3, 3), m.pos.z + rng.range(-3, 3));
+      if (this.convoy && this.convoy.vehicles.includes(m as GroundVehicle)) this.convoy.killed++;
+    }
+    this.refreshTargets();
+  }
+
+  private gunshipCrash(g: Gunship) {
+    g.crashed = false;
+    this.explode(g.pos.x, g.pos.y + 1, g.pos.z, 5.5, 10, { dmg: 0 });
+    this.fx.addFire(g.pos.x, g.pos.y, g.pos.z, 1.8, 22 + Math.random() * 12);
+    // scattered burnt wreckage
+    const rng = new RNG(Math.floor(g.pos.x * 17 + g.pos.z));
+    const gy = this.world.topY(g.pos.x, g.pos.z, Math.floor(g.pos.y) + 4) + 1;
+    for (let dz = -5; dz <= 5; dz++)
+      for (let dx = -2; dx <= 2; dx++)
+        for (let dy = 0; dy <= 1; dy++) {
+          if (!rng.chance(dy ? 0.25 : 0.6)) continue;
+          const wx = Math.floor(g.pos.x) + dx,
+            wz = Math.floor(g.pos.z) + dz;
+          if (this.world.get(wx, gy + dy, wz) === 0) this.world.set(wx, gy + dy, wz, rng.chance(0.6) ? M.WRECK : M.SOOT);
+        }
+  }
+
+  /** Write a wreck model into the voxel world, centred on a point, without overwriting anything. */
+  private stampWreck(m: VoxModel, cx: number, y: number, cz: number) {
+    const ox = Math.floor(cx - m.sx / 2),
+      oz = Math.floor(cz - m.sz / 2),
+      oy = Math.floor(y);
+    for (let yy = 0; yy < m.sy; yy++)
+      for (let zz = 0; zz < m.sz; zz++)
+        for (let xx = 0; xx < m.sx; xx++) {
+          const v = m.get(xx, yy, zz);
+          if (v && this.world.get(ox + xx, oy + yy, oz + zz) === 0) this.world.set(ox + xx, oy + yy, oz + zz, v);
+        }
+  }
+
+  private dropPickup(type: PickupType, x: number, z: number) {
+    const y = this.world.topY(x, z) + 1;
+    const pk = new Pickup(type, new THREE.Vector3(x, y, z));
+    this.pickups.push(pk);
+    this.sectorGroup.add(pk.obj);
+  }
+
+  private bumpStreak() {
+    this.streakN = this.streakT > 0 ? this.streakN + 1 : 1;
+    this.streakT = STREAK_TIME;
+  }
+
+  /** Credit multiplier from the current kill streak: +10% per kill after the first, up to x2. */
+  private get streakMul(): number {
+    return 1 + Math.min(10, Math.max(0, this.streakN - 1)) * 0.1;
   }
 
   private onStructureDestroyed(s: StructureState) {
@@ -1191,16 +1516,20 @@ export class Game {
     }
     if (d.team === 'enemy' && this.run) {
       this.run.structures++;
-      if (d.reward) this.addCredits(d.reward, `${d.label} destroyed`);
+      if (d.reward >= 15) this.bumpStreak();
+      if (d.reward) this.addCredits(d.reward, `${d.label} destroyed`, d.reward >= 15 ? new THREE.Vector3(cx, d.y1 + 2, cz) : undefined);
     }
     this.checkObjectives();
   }
 
-  private addCredits(n: number, why: string) {
+  /** `at`: world position for a floating "+N" (kills). */
+  private addCredits(n: number, why: string, at?: THREE.Vector3) {
     if (!this.run || this.state !== 'playing') return;
-    const cr = Math.round(n * this.stats.creditMul);
+    const mul = this.streakMul;
+    const cr = Math.round(n * this.stats.creditMul * mul);
     this.run.pending += cr;
-    this.hud.message(`+${cr} CR · ${why}`, '#e8d24a', 2200);
+    this.hud.message(`+${cr} CR · ${why}${mul > 1 ? ` · ×${mul.toFixed(1)}` : ''}`, '#e8d24a', 2200);
+    if (at) this.hud.floater(at, `+${cr}`, mul > 1 ? '#ffd24a' : '#e8d24a');
     this.addXp(n);
   }
 
@@ -1284,11 +1613,17 @@ export class Game {
         this.addCredits(150, `${b.name} neutralised`);
         this.hud.message(`${b.name} NEUTRALISED`, '#9dff9a', 4000);
         this.audio.baseDestroyed();
+        this.slowT = Math.max(this.slowT, 0.7);
       }
     }
     if (this.map.bases.every((b) => this.baseDone(b))) {
       this.sectorCleared = true;
       this.hud.message('ALL PRIMARY TARGETS DESTROYED — RETURN TO FARP', '#9dff9a', 6000);
+      // the enemy scrambles gunships to catch you on the way home
+      if (!this.scrambled) {
+        this.scrambled = true;
+        this.scrambleGunships(this.map.sector >= 4 ? 2 : 1);
+      }
     }
   }
 
@@ -1589,6 +1924,50 @@ export class Game {
       sy = (Math.random() - 0.5) * shake * 3;
     cam.position.set(this.camFocus.x + sx, this.camFocus.y + Math.sin(pitch) * dist + sy, this.camFocus.z + Math.cos(pitch) * dist);
     cam.lookAt(this.camFocus.x + sx * 0.5, this.camFocus.y, this.camFocus.z + sy * 0.5);
+    this.updateAtmosphere(dt, dist);
+  }
+
+  /** Per-frame lighting and screen effects that follow the camera and the aircraft. */
+  private updateAtmosphere(dt: number, camDist: number) {
+    const rig = this.rig;
+    const a = this.atmo;
+    rig.setFocusDistance(camDist);
+    const fog = rig.scene.fog as THREE.Fog;
+    this.smoke.setFog(fog.near, fog.far);
+    this.glow.setFog(fog.near, fog.far);
+    const h = this.heli;
+    const flying = (this.state === 'playing' || this.state === 'paused' || this.state === 'levelup') && !h.dead;
+    // nose searchlight: a pool of light on the ground ahead (night only)
+    if (a.searchlight > 0) {
+      const sl = rig.searchlight;
+      const on = flying && !h.crashed && h.rpm > 0.3;
+      sl.intensity = lerp(sl.intensity, on ? 3.2 * a.searchlight : 0, 1 - Math.exp(-6 * dt));
+      const fwd = h.forward(new THREE.Vector3());
+      sl.position.copy(h.pos).addScaledVector(fwd, 5);
+      sl.position.y += 2;
+      const reach = 26 + h.agl * 0.75;
+      sl.target.position.set(h.pos.x + fwd.x * reach, h.pos.y - h.agl, h.pos.z + fwd.z * reach);
+    }
+    // screen: red edge pulse when the hull is critical, white flash from close blasts
+    const frac = flying ? h.hp / this.stats.maxHp : 1;
+    const danger = frac < 0.3 && this.state === 'playing' ? (1 - frac / 0.3) * (0.3 + 0.25 * Math.sin(performance.now() / 160)) : 0;
+    this.screenFlash = Math.max(0, this.screenFlash - dt * 3.5);
+    rig.setScreenFx(danger, this.screenFlash * 0.5);
+    // dust motes blowing through on the wind
+    if (a.dust > 0 && this.state !== 'paused' && this.state !== 'levelup') {
+      this.dustT += dt * a.dust;
+      const w = h.wind;
+      const ws = Math.max(6, w.length() * 6);
+      const wl = w.length() || 1;
+      while (this.dustT >= 1) {
+        this.dustT -= 1;
+        const px = this.camFocus.x + (Math.random() - 0.5) * 420 - (w.x / wl) * 60;
+        const pz = this.camFocus.z + (Math.random() - 0.5) * 360 - (w.z / wl) * 60;
+        const S = this.map.size;
+        const gy = this.map.heights[clamp(Math.floor(px), 0, S - 1) + clamp(Math.floor(pz), 0, S - 1) * S];
+        this.smoke.spawn({ x: px, y: gy + 2 + Math.random() * (a.dust > 20 ? 40 : 8), z: pz, vx: (w.x / wl) * ws, vy: Math.random() * 1.2, vz: (w.z / wl) * ws, life: 2.5 + Math.random() * 2.5, size0: 0.8, size1: a.dust > 20 ? 5 : 2.6, c0: 0xdcc296, c1: 0xe6d2ac, a0: a.dust > 20 ? 0.34 : 0.3, a1: 0, drag: 0, grav: 0, spin: 0.4 });
+      }
+    }
   }
 
   private collectWarnings(dt: number): string[] {
@@ -1627,6 +2006,11 @@ export class Game {
     const rescued = this.rescues.reduce((a, s) => a + (s.total - s.crew), 0);
     const total = this.rescues.reduce((a, s) => a + s.total, 0);
     objs.push({ text: `Rescue crews ${rescued}/${total}${h.crew ? ` (${h.crew} aboard)` : ''}`, done: rescued === total && h.crew === 0 });
+    const cv = this.convoy;
+    if (cv && cv.rolling) {
+      const eta = `${Math.floor(cv.eta / 60)}:${String(Math.floor(cv.eta % 60)).padStart(2, '0')}`;
+      objs.push({ text: cv.done ? `Convoy ${cv.killed}/${cv.total}${cv.escaped ? ' · escaped' : ''}` : `Convoy ${cv.killed}/${cv.total} · leaves in ${eta}`, done: cv.done });
+    }
     if (this.sectorCleared) objs.push({ text: '> RETURN TO FARP AND LAND', done: false, active: true });
     // text panels are DOM: refresh at ~15 Hz rather than every frame
     this.hudT -= dt;
@@ -1661,6 +2045,8 @@ export class Game {
       xp: r?.xp ?? 0,
       xpNext: xpToNext(r?.level ?? 1),
       sector: this.map.sector,
+      streak: this.streakMul,
+      streakLeft: this.streakT / STREAK_TIME,
       warnings,
       objectives: objs,
     });
@@ -1671,8 +2057,15 @@ export class Game {
     for (const b of this.map.bases) if (!this.baseDone(b)) blips.push({ x: b.x, z: b.z, color: '#ff4a3a', size: 4, shape: 'ring' });
     for (const p of this.pickups) if (p.alive) blips.push({ x: p.pos.x, z: p.pos.z, color: PICKUP_COLOR[p.type], size: 2, shape: 'square' });
     for (const s of this.rescues) if (!s.done) blips.push({ x: s.pos.x, z: s.pos.z, color: '#ff9adf', size: 3.5, shape: 'diamond' });
+    for (const m of this.mobiles) {
+      if (!m.alive) continue;
+      // parked convoy vehicles stay off the scope until the convoy rolls
+      if (!m.air && cv && !cv.rolling) continue;
+      blips.push({ x: m.pos.x, z: m.pos.z, color: m.spec.radarColor, size: m.air ? 3.5 : 2.5, shape: m.air ? 'tri' : 'dot' });
+    }
     blips.push({ x: this.map.farp.padX, z: this.map.farp.padZ, color: '#7dffb0', size: 4, shape: 'diamond' });
-    hud.drawRadar(h.pos.x, h.pos.z, h.yaw, this.stats.radarRange, blips.filter((b) => b.shape !== 'square' || Math.hypot(b.x - h.pos.x, b.z - h.pos.z) < this.stats.radarRange), dt);
+    const radarRange = this.stats.radarRange * this.atmo.radar;
+    hud.drawRadar(h.pos.x, h.pos.z, h.yaw, radarRange, blips.filter((b) => b.shape !== 'square' || Math.hypot(b.x - h.pos.x, b.z - h.pos.z) < radarRange), dt);
     hud.drawMap(this.map.size, { x: h.pos.x, z: h.pos.z, heading: h.yaw }, blips);
 
     // overlay
@@ -1685,10 +2078,15 @@ export class Game {
     hud.ring(sp.x, sp.y, 5, 'rgba(157,255,154,0.45)');
     // gunner designation (bracket + name), red LOCK when a missile can be fired
     if (this.desig) {
-      hud.project(this.desig.point, cam, sp);
+      const dg = this.desig;
+      // bracket the thing itself (for moving targets the aim point leads it)
+      hud.project(dg.kind === 'mobile' ? dg.mobile!.center : dg.point, cam, sp);
       const locked = this.stats.missiles > 0 && this.lockT >= this.stats.lockTime;
-      const col = locked ? '#ff4a3a' : this.desig.kind === 'turret' ? '#ff8a5a' : '#ffe46a';
-      hud.bracket(sp.x, sp.y, 16, col, locked ? `${this.desig.label} · LOCK` : this.desig.label);
+      const col = locked ? '#ff4a3a' : dg.kind === 'structure' ? '#ffe46a' : '#ff8a5a';
+      hud.bracket(sp.x, sp.y, 16, col, locked ? `${dg.label} · LOCK` : dg.label);
+      // how much more it can take
+      const left = dg.kind === 'turret' ? dg.turret!.hp / dg.turret!.maxHp : dg.kind === 'mobile' ? dg.mobile!.hp / dg.mobile!.maxHp : this.tracker.integrity(dg.sid);
+      hud.healthBar(sp.x, sp.y + 21, 30, left, col);
     }
     // aim point (cannon + rockets) with a sight line from the aircraft
     if (this.aimValid) {
@@ -1706,6 +2104,36 @@ export class Game {
       if (sp.behind || sp.x < 0 || sp.y < 0 || sp.x > hud.overlay.width || sp.y > hud.overlay.height) continue;
       hud.bracket(sp.x, sp.y, 10, t.hasLOS ? 'rgba(255,90,70,0.9)' : 'rgba(255,170,90,0.45)');
     }
+    const offScreen = (q: { x: number; y: number; behind: boolean }) => q.behind || q.x < 40 || q.y < 40 || q.x > hud.overlay.width - 40 || q.y > hud.overlay.height - 40;
+    // gunships and convoy vehicles: brackets on screen, an edge marker when one is hunting you from off screen
+    let convoyMarked = false;
+    for (const m of this.mobiles) {
+      if (!m.alive || (!m.air && cv && !cv.rolling)) continue;
+      hud.project(m.center, cam, sp);
+      if (offScreen(sp)) {
+        if (m.air && m.hunting) hud.edgeMarker(sp.x, sp.y, '#ff5a8a', 'BANDIT', sp.behind);
+        else if (!m.air && !convoyMarked && Math.hypot(m.pos.x - h.pos.x, m.pos.z - h.pos.z) < 700) {
+          convoyMarked = true;
+          hud.edgeMarker(sp.x, sp.y, '#ffd24a', 'CONVOY', sp.behind);
+        }
+      } else if (m !== this.desig?.mobile) hud.bracket(sp.x, sp.y, 10, m.hunting ? 'rgba(255,90,120,0.95)' : 'rgba(255,190,90,0.55)');
+    }
+    // where recent hits came from
+    if (this.hitArcs.length) {
+      const hp2 = { x: 0, y: 0, behind: false };
+      hud.project(h.pos, cam, hp2);
+      for (let i = this.hitArcs.length - 1; i >= 0; i--) {
+        const a = this.hitArcs[i];
+        a.t += dt;
+        if (a.t > 1.1) {
+          this.hitArcs.splice(i, 1);
+          continue;
+        }
+        hud.project(new THREE.Vector3(a.x, h.pos.y, a.z), cam, sp);
+        hud.hitArc(hp2.x, hp2.y, Math.atan2(sp.y - hp2.y, sp.x - hp2.x), 1 - a.t / 1.1);
+      }
+    }
+    hud.drawFloaters(cam, dt);
     // pickups / rescues / farp markers
     for (const p of this.pickups) {
       if (!p.alive) continue;
@@ -1724,17 +2152,12 @@ export class Game {
     }
     const f = this.map.farp;
     hud.project(new THREE.Vector3(f.padX, f.y + 3, f.padZ), cam, sp);
-    hud.edgeMarker(sp.x, sp.y, '#7dffb0', 'FARP', sp.behind);
-    if (this.sectorCleared || h.fuel < this.stats.maxFuel * 0.25) {
-      // emphasise home
-      hud.edgeMarker(sp.x, sp.y, '#7dffb0', 'FARP', sp.behind);
-    }
+    hud.edgeMarker(sp.x, sp.y, '#7dffb0', this.sectorCleared ? 'FARP · LAND TO FINISH' : 'FARP', sp.behind);
     // objective markers (off-screen only)
     for (const b of this.map.bases) {
       if (this.baseDone(b)) continue;
       hud.project(new THREE.Vector3(b.x, f.y + 5, b.z), cam, sp);
-      const on = !sp.behind && sp.x > 40 && sp.y > 40 && sp.x < hud.overlay.width - 40 && sp.y < hud.overlay.height - 40;
-      if (!on) hud.edgeMarker(sp.x, sp.y, '#ff6a5a', b.name.split(' ').slice(-1)[0], sp.behind);
+      if (offScreen(sp)) hud.edgeMarker(sp.x, sp.y, '#ff6a5a', b.name.split(' ').slice(-1)[0], sp.behind);
     }
   }
 }

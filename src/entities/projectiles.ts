@@ -273,7 +273,8 @@ export class Projectiles {
       tmp2.copy(p.pos).addScaledVector(tmp, -len * 0.5);
       this.m4.compose(tmp2, this.q, this.s);
       mesh.setMatrixAt(n, this.m4);
-      this.col.setHex(p.color);
+      // brighter than white so tracers pick up bloom
+      this.col.setHex(p.color).multiplyScalar(p.kind === 'bullet' || p.kind === 'ebullet' || p.kind === 'flare' ? 2.6 : 1.7);
       mesh.setColorAt(n, this.col);
       n++;
     }

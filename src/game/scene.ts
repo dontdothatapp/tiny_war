@@ -1,16 +1,81 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { voxelGlobals } from '../voxel/voxelMaterial';
+import { ATMOSPHERES, Atmosphere } from './atmosphere';
 
 export const SKY_COLOR = 0xe6cfa3;
 
-/** Renderer, scene, lights and the follow camera. */
+/**
+ * Final grade, in linear space before the sRGB conversion: tint, saturation,
+ * contrast, vignette, a dust haze that closes in from the screen edges, a red
+ * edge pulse when the hull is critical and a white flash for big blasts.
+ */
+const GradeShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    uTint: { value: new THREE.Vector3(1, 1, 1) },
+    uContrast: { value: 1 },
+    uSaturation: { value: 1 },
+    uVignette: { value: 0.3 },
+    uHaze: { value: 0 },
+    uHazeColor: { value: new THREE.Color(SKY_COLOR) },
+    uDanger: { value: 0 },
+    uFlash: { value: 0 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform vec3 uTint;
+    uniform float uContrast;
+    uniform float uSaturation;
+    uniform float uVignette;
+    uniform float uHaze;
+    uniform vec3 uHazeColor;
+    uniform float uDanger;
+    uniform float uFlash;
+    varying vec2 vUv;
+    void main() {
+      vec4 src = texture2D(tDiffuse, vUv);
+      vec3 col = src.rgb * uTint;
+      float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(vec3(l), col, uSaturation);
+      col = max((col - 0.18) * uContrast + 0.18, 0.0);
+      float r = length((vUv - 0.5) * vec2(1.0, 0.86)) * 1.42;
+      col = mix(col, uHazeColor, uHaze * smoothstep(0.22, 0.95, r));
+      float v = smoothstep(0.38, 1.0, r);
+      col *= 1.0 - v * uVignette;
+      col = mix(col, vec3(0.85, 0.06, 0.03), v * uDanger);
+      col += uFlash * vec3(1.0, 0.9, 0.75);
+      gl_FragColor = vec4(col, src.a);
+    }`,
+};
+
+/** Renderer, scene, lights, post-processing and the follow camera. */
 export class SceneRig {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   readonly sun: THREE.DirectionalLight;
   readonly hemi: THREE.HemisphereLight;
+  /** Nose searchlight for night sectors (the game aims it every frame). */
+  readonly searchlight: THREE.SpotLight;
+  readonly composer: EffectComposer;
+  readonly bloom: UnrealBloomPass;
+  private grade: ShaderPass;
+  atmosphere: Atmosphere = ATMOSPHERES.day;
+  /** Unit vector towards the sun (shared with the particle shaders). */
+  readonly sunDir = new THREE.Vector3(-0.5, 0.85, 0.35).normalize();
   pixelScale = 2; // 1 = native, 2/3 = chunky retro pixels
-  private sunOffset = new THREE.Vector3(-90, 150, 60);
+  private sunOffset = new THREE.Vector3();
 
   constructor(private container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
@@ -18,6 +83,8 @@ export class SceneRig {
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.NoToneMapping;
+    // several passes render per frame; the game resets the counters itself
+    this.renderer.info.autoReset = false;
     this.renderer.domElement.id = 'game-canvas';
     container.appendChild(this.renderer.domElement);
 
@@ -37,14 +104,67 @@ export class SceneRig {
     sc.top = 200;
     sc.bottom = -200;
     sc.near = 10;
-    sc.far = 500;
+    sc.far = 760;
     this.sun.shadow.bias = -0.0006;
     this.sun.shadow.normalBias = 0.6;
     this.scene.add(this.sun);
     this.scene.add(this.sun.target);
 
+    this.searchlight = new THREE.SpotLight(0xfff2d0, 0, 260, 0.34, 0.55, 0);
+    this.searchlight.visible = false;
+    this.scene.add(this.searchlight);
+    this.scene.add(this.searchlight.target);
+
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.5, 0.45, 0.92);
+    this.composer.addPass(this.bloom);
+    this.grade = new ShaderPass(GradeShader);
+    this.composer.addPass(this.grade);
+    this.composer.addPass(new OutputPass());
+
+    this.applyAtmosphere(ATMOSPHERES.day);
     this.resize();
     window.addEventListener('resize', () => this.resize());
+  }
+
+  /** Switch lighting, haze and grading to a time of day / weather. */
+  applyAtmosphere(a: Atmosphere) {
+    this.atmosphere = a;
+    (this.scene.background as THREE.Color).setHex(a.sky);
+    (this.scene.fog as THREE.Fog).color.setHex(a.sky);
+    this.sun.color.setHex(a.sun);
+    this.sun.intensity = a.sunIntensity;
+    this.sunDir.set(...a.sunDir).normalize();
+    this.sunOffset.copy(this.sunDir).multiplyScalar(320);
+    this.hemi.color.setHex(a.hemiSky);
+    this.hemi.groundColor.setHex(a.hemiGround);
+    this.hemi.intensity = a.hemiIntensity;
+    this.searchlight.visible = a.searchlight > 0;
+    this.searchlight.intensity = 0;
+    this.bloom.strength = a.bloom;
+    const u = this.grade.uniforms;
+    (u.uTint.value as THREE.Vector3).set(...a.tint);
+    u.uContrast.value = a.contrast;
+    u.uSaturation.value = a.saturation;
+    u.uVignette.value = a.vignette;
+    u.uHaze.value = a.haze;
+    (u.uHazeColor.value as THREE.Color).setHex(a.sky);
+    voxelGlobals.uCloud.value.x = a.cloud;
+    voxelGlobals.uGlow.value = a.glow;
+  }
+
+  /** Fog is measured from the camera's focus distance so zooming doesn't change the haze. */
+  setFocusDistance(dist: number) {
+    const fog = this.scene.fog as THREE.Fog;
+    fog.near = dist + this.atmosphere.fogNear;
+    fog.far = dist + this.atmosphere.fogFar;
+  }
+
+  /** Red edge pulse (0..1) and white blast flash (0..1). */
+  setScreenFx(danger: number, flash: number) {
+    this.grade.uniforms.uDanger.value = danger;
+    this.grade.uniforms.uFlash.value = flash;
   }
 
   setPixelScale(s: number) {
@@ -56,8 +176,11 @@ export class SceneRig {
     const w = this.container.clientWidth || window.innerWidth;
     const h = this.container.clientHeight || window.innerHeight;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.renderer.setPixelRatio(dpr / this.pixelScale);
+    const pr = dpr / this.pixelScale;
+    this.renderer.setPixelRatio(pr);
     this.renderer.setSize(w, h);
+    this.composer.setPixelRatio(pr);
+    this.composer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }
@@ -73,6 +196,7 @@ export class SceneRig {
   }
 
   render() {
-    this.renderer.render(this.scene, this.camera);
+    this.renderer.info.reset();
+    this.composer.render();
   }
 }

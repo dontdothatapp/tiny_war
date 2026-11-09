@@ -12,15 +12,24 @@ interface Fire {
   black: boolean;
 }
 
+interface Ring {
+  mesh: THREE.Mesh;
+  t: number;
+  life: number;
+  r0: number;
+  r1: number;
+}
+
 /**
- * Explosion visuals (fireball cubes, smoke, sparks, flash lights) and
- * persistent fires / smoke columns on wrecks.
+ * Explosion visuals (fireball cubes, smoke, sparks, shockwave rings, flash
+ * lights) and persistent fires / smoke columns on wrecks.
  */
 export class Effects {
   private fires: Fire[] = [];
   private lights: THREE.PointLight[] = [];
   private lightLife: number[] = [];
   private lightMax: number[] = [];
+  private rings: Ring[] = [];
 
   constructor(
     scene: THREE.Object3D,
@@ -34,6 +43,30 @@ export class Effects {
       this.lightLife.push(0);
       this.lightMax.push(1);
     }
+    // shockwave rings: flat, additive, bright enough to bloom
+    const ringGeo = new THREE.RingGeometry(0.84, 1, 40);
+    for (let i = 0; i < 10; i++) {
+      const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 1.8, 1.25), transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, toneMapped: false, fog: false });
+      const mesh = new THREE.Mesh(ringGeo, mat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.visible = false;
+      mesh.renderOrder = 4;
+      mesh.frustumCulled = false;
+      scene.add(mesh);
+      this.rings.push({ mesh, t: 1, life: 1, r0: 1, r1: 1 });
+    }
+  }
+
+  /** Expanding ring on the ground under a blast. */
+  shockwave(x: number, y: number, z: number, r: number) {
+    let best = this.rings[0];
+    for (const g of this.rings) if (g.life - g.t < best.life - best.t) best = g;
+    best.t = 0;
+    best.life = 0.3 + r * 0.025;
+    best.r0 = r * 0.5;
+    best.r1 = r * 3.6 + 2;
+    best.mesh.position.set(x, y + 0.8, z);
+    best.mesh.visible = true;
   }
 
   flash(x: number, y: number, z: number, intensity: number, range: number) {
@@ -114,6 +147,20 @@ export class Effects {
         grav: -40,
       });
     }
+    // white-hot core that collapses in a few frames
+    g.spawn({ x, y: y + r * 0.2, z, life: 0.11 + r * 0.008, size0: r * 1.5 + 1, size1: r * 0.4, c0: 0xfffbe0, c1: 0xffc060, emissive: 1, a0: 1, a1: 0.5, spin: 0 });
+    if (!airburst) {
+      this.shockwave(x, y, z, r);
+      // dust kicked out along the ground
+      if (r >= 2.5) {
+        const nd = Math.min(18, Math.floor(r * 3));
+        for (let i = 0; i < nd; i++) {
+          const a = (i / nd) * Math.PI * 2 + Math.random() * 0.4;
+          const sp = (9 + Math.random() * 8) * (r / 3);
+          s.spawn({ x: x + Math.cos(a) * r * 0.6, y: y + 0.4, z: z + Math.sin(a) * r * 0.6, vx: Math.cos(a) * sp, vy: 0.6 + Math.random() * 1.5, vz: Math.sin(a) * sp, life: 0.9 + Math.random() * 0.9, size0: 1.2, size1: 3 + r * 0.7, c0: 0xcfb086, c1: 0xdcc6a0, a0: 0.6, a1: 0, drag: 2.6, grav: 0.4, spin: 0.3 });
+        }
+      }
+    }
     this.flash(x, y, z, 30 + r * 25, 20 + r * 8);
   }
 
@@ -191,6 +238,18 @@ export class Effects {
   }
 
   update(dt: number) {
+    for (const g of this.rings) {
+      if (!g.mesh.visible) continue;
+      g.t += dt;
+      const k = g.t / g.life;
+      if (k >= 1) {
+        g.mesh.visible = false;
+        continue;
+      }
+      const e = 1 - (1 - k) * (1 - k);
+      g.mesh.scale.setScalar(g.r0 + (g.r1 - g.r0) * e);
+      (g.mesh.material as THREE.MeshBasicMaterial).opacity = Math.pow(1 - k, 1.6) * 0.55;
+    }
     for (let i = 0; i < this.lights.length; i++) {
       if (this.lightLife[i] > 0) {
         this.lightLife[i] -= dt;
@@ -251,5 +310,6 @@ export class Effects {
 
   clear() {
     this.fires.length = 0;
+    for (const g of this.rings) g.mesh.visible = false;
   }
 }
