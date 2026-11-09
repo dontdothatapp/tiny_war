@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { Audio } from '../core/audio';
+import { BTN, Btn, GamepadInput, expo, padHelp } from '../core/gamepad';
 import { Input } from '../core/input';
 import { RNG, clamp, lerp } from '../core/rng';
 import { DebrisSystem } from '../fx/debris';
@@ -9,8 +10,8 @@ import { Helicopter, HeliControls } from '../entities/helicopter';
 import { PICKUP_COLOR, PICKUP_LABEL, Pickup, RescueSite } from '../entities/pickups';
 import { HitTarget, Projectile, Projectiles } from '../entities/projectiles';
 import { TURRET_SPECS, Turret } from '../entities/turret';
-import { Hud, HudObjective, RadarBlip } from '../ui/hud';
-import { Menus } from '../ui/menus';
+import { Hud, HudObjective, KEYBOARD_HELP, RadarBlip } from '../ui/hud';
+import { Menus, PadStatus } from '../ui/menus';
 import { BodySystem } from '../voxel/bodies';
 import { ChunkRenderer } from '../voxel/chunkRenderer';
 import { Destruction } from '../voxel/destruction';
@@ -49,6 +50,7 @@ const SUN_DIR = new THREE.Vector3(-0.5, 0.85, 0.35).normalize();
 export class Game {
   readonly rig: SceneRig;
   readonly input: Input;
+  readonly pad = new GamepadInput();
   readonly audio = new Audio();
   readonly hud: Hud;
   readonly menus: Menus;
@@ -109,6 +111,14 @@ export class Game {
   private debug = false;
   private debugEl: HTMLElement;
   private raycaster = new THREE.Raycaster();
+  /** true while the controller is the most recently used device */
+  private padMode = false;
+  /** a menu consumed this frame's controller press */
+  private padEat = false;
+  private padAimOff = new THREE.Vector3(0, 0, -60);
+  private autoAimPt = new THREE.Vector3();
+  private navDir = '';
+  private navT = 0;
 
   constructor(container: HTMLElement) {
     this.rig = new SceneRig(container);
@@ -131,6 +141,96 @@ export class Game {
     const unlock = () => this.audio.init();
     window.addEventListener('pointerdown', unlock);
     window.addEventListener('keydown', unlock);
+    this.pad.rumbleEnabled = this.save.settings.rumble;
+    this.pad.onConnect = () => {
+      this.hud.message(`CONTROLLER CONNECTED · ${this.padName()}`, '#9dff9a');
+      if (this.state === 'title') this.showTitle();
+    };
+    this.pad.onDisconnect = () => {
+      this.hud.message('CONTROLLER DISCONNECTED', '#ffb84a');
+      if (this.state === 'title') this.showTitle();
+    };
+  }
+
+  // ======================================================================== controller
+
+  private padName(): string {
+    const id = this.pad.id.replace(/^[0-9a-f]{4}-[0-9a-f]{4}-/i, '');
+    return (id.split(' (')[0] || 'Gamepad').slice(0, 40);
+  }
+
+  private padStatus(): PadStatus {
+    const layout = this.save.settings.padLayout;
+    return { connected: this.pad.connected, name: this.padName(), layout, rumble: this.save.settings.rumble, help: padHelp(this.pad, layout) };
+  }
+
+  private togglePadLayout() {
+    this.save.settings.padLayout = this.save.settings.padLayout === 'gunship' ? 'pilot' : 'gunship';
+    writeSave(this.save);
+    this.audio.ui();
+    this.hud.setHelp(this.padMode ? padHelp(this.pad, this.save.settings.padLayout) : KEYBOARD_HELP);
+  }
+
+  /** Poll devices once per step and work out which one the player is using. */
+  private pollInput() {
+    this.pad.poll();
+    this.padEat = false;
+    const padMode = this.pad.connected && this.pad.lastActive > this.input.lastUsed;
+    if (padMode !== this.padMode) {
+      this.padMode = padMode;
+      document.body.classList.toggle('using-pad', padMode);
+      this.hud.setHelp(padMode ? padHelp(this.pad, this.save.settings.padLayout) : KEYBOARD_HELP);
+      if (padMode && this.state === 'playing') {
+        this.hud.showHelp(true);
+        setTimeout(() => this.hud.showHelp(false), 7000);
+      }
+    }
+  }
+
+  /** Controller press, ignored on a frame where a menu already used the press. */
+  private padHit(b: Btn): boolean {
+    return !this.padEat && this.pad.hit(b);
+  }
+
+  private rumble(strong: number, weak: number, ms: number) {
+    if (this.padMode) this.pad.rumble(strong, weak, ms);
+  }
+
+  /** D-pad / left stick navigation, A to confirm, B to go back. */
+  private menuPad(dt: number) {
+    const p = this.pad;
+    if (!p.connected || !this.menus.open) return;
+    let dx = p.dpadX(),
+      dy = p.dpadY();
+    if (!dx && !dy && p.L.mag > 0.5) {
+      if (Math.abs(p.L.x) > Math.abs(p.L.y)) dx = Math.sign(p.L.x);
+      else dy = Math.sign(p.L.y);
+    }
+    const dir = dx || dy ? `${dx},${dy}` : '';
+    if (dir) {
+      if (dir !== this.navDir) {
+        this.menus.nav(dx, dy);
+        this.navT = 0.35;
+      } else {
+        this.navT -= dt;
+        if (this.navT <= 0) {
+          this.menus.nav(dx, dy);
+          this.navT = 0.11;
+        }
+      }
+    }
+    this.navDir = dir;
+    if (p.hit(BTN.A)) {
+      this.padEat = true;
+      this.audio.init();
+      this.menus.activate();
+    } else if (p.hit(BTN.B)) {
+      this.padEat = true;
+      this.menus.back();
+    } else if (p.hit(BTN.MENU) && this.state === 'paused') {
+      this.padEat = true;
+      this.resume();
+    }
   }
 
   // ======================================================================== flow
@@ -144,8 +244,20 @@ export class Game {
   private showTitle() {
     this.state = 'title';
     this.hud.setVisible(false);
-    this.menus.title(this.save, {
+    this.menus.title(this.save, this.padStatus(), {
       newRun: () => this.startRun(),
+      padLayout: () => {
+        this.togglePadLayout();
+        this.showTitle();
+      },
+      rumble: () => {
+        this.save.settings.rumble = !this.save.settings.rumble;
+        this.pad.rumbleEnabled = this.save.settings.rumble;
+        writeSave(this.save);
+        this.audio.ui();
+        if (this.save.settings.rumble) this.pad.rumble(0.6, 0.6, 250);
+        this.showTitle();
+      },
       hangar: () => this.showHangar(false),
       toggleAssist: () => {
         this.save.settings.assists = !this.save.settings.assists;
@@ -203,7 +315,9 @@ export class Game {
     this.state = 'playing';
     this.audio.init();
     this.hud.message('ENGINES START · ROTOR SPOOL-UP', '#9dff9a');
-    this.hud.message('Hold SPACE to lift off', '#9dff9a', 5000);
+    const liftHint = !this.padMode ? 'Hold SPACE to lift off' : this.save.settings.padLayout === 'gunship' ? `Hold ${this.pad.glyph(BTN.RB)} to lift off` : 'Push the left stick up to lift off';
+    this.hud.message(liftHint, '#9dff9a', 5000);
+    if (this.padMode) setTimeout(() => this.audio.blocked && this.hud.message('Sound starts after one click or key press (browser rule)', '#ffb84a', 5000), 600);
   }
 
   private showHangar(midRun: boolean) {
@@ -413,6 +527,8 @@ export class Game {
     this.fps = lerp(this.fps, 1 / Math.max(1e-3, dtRaw), 0.05);
     this.world.frame++;
     const inp = this.input;
+    this.pollInput();
+    this.menuPad(dtRaw);
     if (inp.hit('Backquote')) this.debug = !this.debug;
     if (inp.hit('KeyP')) {
       this.save.settings.pixelScale = (this.save.settings.pixelScale % 3) + 1;
@@ -453,7 +569,10 @@ export class Game {
   simulate(seconds: number, dt = 1 / 60) {
     for (let t = 0; t < seconds; t += dt) {
       this.world.frame++;
+      this.pollInput();
+      this.menuPad(dt);
       if (this.state === 'playing' || this.state === 'over') this.updatePlaying(dt);
+      this.input.endFrame();
       this.updateCamera(dt);
       this.chunks.update(this.camFocus.x, this.camFocus.z - 30, 2);
     }
@@ -463,6 +582,23 @@ export class Game {
     this.menus.hide();
     this.state = 'playing';
     this.hud.setVisible(true);
+  }
+
+  private pause() {
+    this.state = 'paused';
+    this.menus.pause(this.padStatus(), {
+      resume: () => this.resume(),
+      abort: () => {
+        this.menus.hide();
+        this.overReason = 'Run abandoned';
+        this.run!.pending = 0;
+        this.showDebrief();
+      },
+      padLayout: () => {
+        this.togglePadLayout();
+        this.pause();
+      },
+    });
   }
 
   private updateWorldSystems(dt: number) {
@@ -485,38 +621,50 @@ export class Game {
   private updatePlaying(dt: number) {
     const inp = this.input;
     const h = this.heli;
+    const pad = this.pad;
+    const layout = this.save.settings.padLayout;
     if (this.state === 'playing') {
-      if (inp.hit('Escape')) {
-        this.state = 'paused';
-        this.menus.pause({
-          resume: () => this.resume(),
-          abort: () => {
-            this.menus.hide();
-            this.overReason = 'Run abandoned';
-            this.run!.pending = 0;
-            this.showDebrief();
-          },
-        });
+      if (inp.hit('Escape') || this.padHit(BTN.MENU)) {
+        this.pause();
         return;
       }
-      if (inp.hit('KeyM')) this.hud.toggleMap();
-      if (inp.hit('KeyH')) {
+      if (inp.hit('KeyM') || this.padHit(BTN.Y)) this.hud.toggleMap();
+      if (inp.hit('KeyH') || this.padHit(BTN.VIEW)) {
         h.assists = !h.assists;
         this.save.settings.assists = h.assists;
         writeSave(this.save);
         this.hud.message(h.assists ? 'SAS ENGAGED' : 'SAS OFF · FULL MANUAL', h.assists ? '#9dff9a' : '#ffb84a');
       }
       if (inp.wheel) this.zoom = clamp(this.zoom + inp.wheel * 18, 150, 360);
+      if (pad.dpadY()) this.zoom = clamp(this.zoom + pad.dpadY() * 170 * dt, 150, 360);
     }
 
     // controls
     const alive = this.state === 'playing' && !h.crashed;
+    // controller axes (analog) are summed with the keyboard
+    let pp = 0,
+      pr = 0,
+      py = 0,
+      pc = 0;
+    if (pad.connected) {
+      if (layout === 'gunship') {
+        pp = expo(-pad.L.y);
+        pr = expo(pad.L.x);
+        py = pad.dpadX();
+        pc = (pad.pressed(BTN.RB) ? 1 : 0) - (pad.pressed(BTN.LB) ? 1 : 0);
+      } else {
+        pc = -pad.L.y;
+        py = expo(pad.L.x, 1.3);
+        pp = expo(-pad.R.y);
+        pr = expo(pad.R.x);
+      }
+    }
     const c: HeliControls = alive
       ? {
-          pitch: inp.axis(['KeyS', 'ArrowDown'], ['KeyW', 'ArrowUp']),
-          roll: inp.axis(['KeyA', 'ArrowLeft'], ['KeyD', 'ArrowRight']),
-          yaw: inp.axis(['KeyQ'], ['KeyE']),
-          collective: inp.axis(['ShiftLeft', 'ShiftRight', 'KeyC'], ['Space']),
+          pitch: clamp(inp.axis(['KeyS', 'ArrowDown'], ['KeyW', 'ArrowUp']) + pp, -1, 1),
+          roll: clamp(inp.axis(['KeyA', 'ArrowLeft'], ['KeyD', 'ArrowRight']) + pr, -1, 1),
+          yaw: clamp(inp.axis(['KeyQ'], ['KeyE']) + py, -1, 1),
+          collective: clamp(inp.axis(['ShiftLeft', 'ShiftRight', 'KeyC'], ['Space']) + pc, -1, 1),
         }
       : { pitch: 0, roll: 0, yaw: 0, collective: -1 };
     h.payload = this.ammo.gun * 0.006 + this.ammo.rockets * 0.45 + this.ammo.missiles * 1.2 + h.crew * 1.6;
@@ -565,21 +713,9 @@ export class Game {
   // ======================================================================== aiming + weapons
 
   private updateAim(dt: number) {
-    const cam = this.rig.camera;
-    this.raycaster.setFromCamera(new THREE.Vector2(this.input.ndcX, this.input.ndcY), cam);
-    const o = this.raycaster.ray.origin,
-      d = this.raycaster.ray.direction;
-    const hit = this.world.raycast(o.x, o.y, o.z, d.x, d.y, d.z, 900);
-    if (hit) {
-      this.aim.set(o.x + d.x * hit.dist, o.y + d.y * hit.dist, o.z + d.z * hit.dist);
-      this.aimValid = true;
-    } else {
-      // plane at the heli's ground level
-      const gy = this.heli.pos.y - this.heli.agl;
-      const t = (gy - o.y) / (d.y || -1);
-      this.aim.set(o.x + d.x * t, gy, o.z + d.z * t);
-      this.aimValid = t > 0;
-    }
+    if (this.padMode && this.save.settings.padLayout === 'gunship') this.stickAim(dt);
+    else if (this.padMode) this.autoAim(dt);
+    else this.mouseAim();
     // turret under cursor for missile lock
     let best: Turret | null = null;
     let bestD = 22;
@@ -604,6 +740,92 @@ export class Game {
     if (rh) this.ccip.copy(start).addScaledVector(bs, rh.dist);
   }
 
+  private mouseAim() {
+    const cam = this.rig.camera;
+    this.raycaster.setFromCamera(new THREE.Vector2(this.input.ndcX, this.input.ndcY), cam);
+    const o = this.raycaster.ray.origin,
+      d = this.raycaster.ray.direction;
+    const hit = this.world.raycast(o.x, o.y, o.z, d.x, d.y, d.z, 900);
+    if (hit) {
+      this.aim.set(o.x + d.x * hit.dist, o.y + d.y * hit.dist, o.z + d.z * hit.dist);
+      this.aimValid = true;
+    } else {
+      // plane at the heli's ground level
+      const gy = this.heli.pos.y - this.heli.agl;
+      const t = (gy - o.y) / (d.y || -1);
+      this.aim.set(o.x + d.x * t, gy, o.z + d.z * t);
+      this.aimValid = t > 0;
+    }
+  }
+
+  /** Surface height under a map point (roofs count), searched from above the aircraft. */
+  private surfaceY(x: number, z: number): number {
+    const y = this.world.topY(x, z, Math.floor(this.heli.pos.y + 30));
+    return y >= 0 ? y + 1 : this.heli.pos.y - this.heli.agl;
+  }
+
+  /**
+   * Gunship layout: the right stick places the reticle around the aircraft
+   * (screen-aligned, push further = aim further). Released, it drifts back
+   * ahead of the nose. Light magnetism pulls it onto nearby emplacements.
+   */
+  private stickAim(dt: number) {
+    const h = this.heli;
+    const R = this.pad.R;
+    const want = new THREE.Vector3();
+    if (R.mag > 0) want.set(R.x, 0, R.y).normalize().multiplyScalar(26 + 150 * R.mag);
+    else h.forward(want).multiplyScalar(60);
+    this.padAimOff.lerp(want, 1 - Math.exp(-(R.mag > 0 ? 12 : 4) * dt));
+    const x = h.pos.x + this.padAimOff.x,
+      z = h.pos.z + this.padAimOff.z;
+    this.aim.set(x, this.surfaceY(x, z), z);
+    let best: Turret | null = null;
+    let bd = 18;
+    for (const t of this.turrets) {
+      if (!t.alive) continue;
+      const d = Math.hypot(t.center.x - x, t.center.z - z);
+      if (d < bd && t.center.distanceTo(h.pos) < 340) {
+        bd = d;
+        best = t;
+      }
+    }
+    if (best) this.aim.lerp(best.center, 0.75);
+    this.aimValid = true;
+  }
+
+  /** Pilot layout: a virtual gunner tracks the most threatening emplacement ahead of the nose. */
+  private autoAim(dt: number) {
+    const h = this.heli;
+    const fwd = h.forward(new THREE.Vector3());
+    let best: Turret | null = null;
+    let bestScore = Infinity;
+    for (const t of this.turrets) {
+      if (!t.alive) continue;
+      const dx = t.center.x - h.pos.x,
+        dz = t.center.z - h.pos.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > 260 || dist < 4) continue;
+      const ang = Math.acos(clamp((dx * fwd.x + dz * fwd.z) / dist, -1, 1));
+      if (ang > 1.25) continue;
+      const score = ang * 120 + dist * 0.4 - (t.hasLOS ? 40 : 0);
+      if (score < bestScore) {
+        bestScore = score;
+        best = t;
+      }
+    }
+    const want = new THREE.Vector3();
+    if (best) want.copy(best.center);
+    else {
+      const x = h.pos.x + fwd.x * 60,
+        z = h.pos.z + fwd.z * 60;
+      want.set(x, this.surfaceY(x, z), z);
+    }
+    if (this.autoAimPt.distanceToSquared(h.pos) > 400 * 400) this.autoAimPt.copy(want);
+    this.autoAimPt.lerp(want, 1 - Math.exp(-7 * dt));
+    this.aim.copy(this.autoAimPt);
+    this.aimValid = true;
+  }
+
   private updateWeapons(dt: number) {
     const h = this.heli;
     const inp = this.input;
@@ -612,8 +834,14 @@ export class Game {
     this.rocketT -= dt;
     this.flareT -= dt;
     const aimDir = h.aimGun(this.aim, new THREE.Vector3());
+    const pad = this.pad;
+    const gunship = this.save.settings.padLayout === 'gunship';
+    const cannon = inp.lmb || pad.pressed(BTN.RT);
+    const rockets = inp.rmb || pad.pressed(BTN.LT);
+    const missileBtn: Btn = gunship ? BTN.A : BTN.RB;
+    const flareBtn: Btn = gunship ? BTN.B : BTN.LB;
     // cannon
-    if (inp.lmb && this.gunT <= 0 && this.ammo.gun > 0 && h.rpm > 0.8) {
+    if (cannon && this.gunT <= 0 && this.ammo.gun > 0 && h.rpm > 0.8) {
       this.gunT = 1 / st.gunRof;
       this.ammo.gun--;
       const m = h.muzzleWorld(new THREE.Vector3());
@@ -632,13 +860,14 @@ export class Game {
       });
       this.fx.muzzle(m.x, m.y, m.z);
       this.audio.gun();
+      this.rumble(0, 0.28, 45);
       h.shake = Math.max(h.shake, 0.06);
-    } else if (inp.mouseHit(0) && this.ammo.gun <= 0) {
+    } else if ((inp.mouseHit(0) || this.padHit(BTN.RT)) && this.ammo.gun <= 0) {
       this.audio.deny();
       this.hud.message('CANNON WINCHESTER — no rounds left', '#ffb84a', 1500);
     }
     // rockets
-    if (inp.rmb && this.rocketT <= 0 && this.ammo.rockets > 0 && h.rpm > 0.8) {
+    if (rockets && this.rocketT <= 0 && this.ammo.rockets > 0 && h.rpm > 0.8) {
       this.rocketT = 0.17;
       this.ammo.rockets--;
       this.podLeft = !this.podLeft;
@@ -664,17 +893,18 @@ export class Game {
       });
       this.fx.muzzle(p.x, p.y, p.z, true);
       this.audio.rocket();
-    } else if (inp.mouseHit(2) && this.ammo.rockets <= 0) {
+      this.rumble(0.35, 0.5, 90);
+    } else if ((inp.mouseHit(2) || this.padHit(BTN.LT)) && this.ammo.rockets <= 0) {
       this.audio.deny();
       this.hud.message('NO ROCKETS — land at the FARP or winch an ammo crate', '#ffb84a', 1800);
     }
     // missiles
-    if (inp.hit('KeyF')) {
+    if (inp.hit('KeyF') || this.padHit(missileBtn)) {
       if (st.missiles <= 0) this.hud.message('Guided missiles not installed (hangar upgrade)', '#ffb84a', 1800);
       else if (this.ammo.missiles <= 0) this.audio.deny();
       else if (!this.lockTurret || this.lockT < 0.6) {
         this.audio.deny();
-        this.hud.message('NO LOCK — hold the cursor over a target', '#ffb84a', 1500);
+        this.hud.message(this.padMode ? 'NO LOCK — keep the reticle on a target' : 'NO LOCK — hold the cursor over a target', '#ffb84a', 1500);
       } else {
         this.ammo.missiles--;
         const t = this.lockTurret;
@@ -698,10 +928,11 @@ export class Game {
           color: 0xffffff,
         });
         this.audio.missile();
+        this.rumble(0.3, 0.6, 220);
       }
     }
     // flares
-    if (inp.hit('KeyX')) {
+    if (inp.hit('KeyX') || this.padHit(flareBtn)) {
       if (st.flares <= 0) this.hud.message('Countermeasures not installed (hangar upgrade)', '#ffb84a', 1800);
       else if (this.ammo.flares > 0 && this.flareT <= 0) {
         this.ammo.flares--;
@@ -817,6 +1048,7 @@ export class Game {
     if (h.dead || amount <= 0 || this.state !== 'playing') return;
     h.hp -= amount;
     h.shake = Math.max(h.shake, Math.min(1, amount / 25));
+    this.rumble(Math.min(1, 0.25 + amount / 25), 0.6, Math.min(500, 120 + amount * 8));
     this.hud.damageFlash(amount);
     this.audio.hit();
     (h.visual.material.userData.flash as { value: number }).value = 0.6;
@@ -834,6 +1066,7 @@ export class Game {
     if (h.dead) return;
     h.dead = true;
     h.visual.root.visible = false;
+    this.rumble(1, 1, 700);
     this.explode(h.pos.x, h.pos.y + 2, h.pos.z, 6, 12, { dmg: 0 });
     this.fx.addFire(h.pos.x, h.pos.y, h.pos.z, 2.5, 30);
     // wreck voxels
@@ -960,7 +1193,9 @@ export class Game {
 
   private addShake(x: number, z: number, amount: number) {
     const d = Math.hypot(x - this.camFocus.x, z - this.camFocus.z);
-    this.shake = Math.max(this.shake, amount * clamp(1 - d / 300, 0, 1));
+    const a = amount * clamp(1 - d / 300, 0, 1);
+    this.shake = Math.max(this.shake, a);
+    if (a > 0.12 && this.state === 'playing') this.rumble(a * 0.8, a * 0.5, 180);
   }
 
   // ======================================================================== entities
@@ -1062,6 +1297,7 @@ export class Game {
   }
 
   private collect(p: Pickup) {
+    this.rumble(0, 0.35, 90);
     p.alive = false;
     p.obj.visible = false;
     const st = this.stats;

@@ -19,9 +19,23 @@ export interface DebriefInfo {
   good: boolean;
 }
 
+export interface PadStatus {
+  connected: boolean;
+  name: string;
+  layout: 'gunship' | 'pilot';
+  rumble: boolean;
+  /** one-line mapping summary for the current layout */
+  help: string;
+}
+
+const keyOf = (b: Element | null) => (b ? b.getAttribute('data-a') ?? b.getAttribute('data-u') : null);
+
 export class Menus {
   readonly root: HTMLElement;
   private screen: HTMLElement | null = null;
+  private focusEl: HTMLButtonElement | null = null;
+  private lastKey: string | null = null;
+  private backAction: (() => void) | null = null;
 
   constructor(container: HTMLElement) {
     this.root = document.createElement('div');
@@ -37,9 +51,12 @@ export class Menus {
     this.root.innerHTML = '';
     this.root.style.display = 'none';
     this.screen = null;
+    this.focusEl = null;
+    this.backAction = null;
   }
 
-  private show(html: string, cls = ''): HTMLElement {
+  private show(html: string, cls = '', back: (() => void) | null = null): HTMLElement {
+    const sameScreen = this.screen?.className === 'menu ' + cls;
     this.root.innerHTML = '';
     this.root.style.display = 'flex';
     const s = document.createElement('div');
@@ -47,7 +64,73 @@ export class Menus {
     s.innerHTML = html;
     this.root.appendChild(s);
     this.screen = s;
+    this.backAction = back;
+    // keep the controller focus on the same control when a screen re-renders (e.g. after a toggle or purchase)
+    const restore = sameScreen && this.lastKey ? (s.querySelector(`[data-a="${this.lastKey}"],[data-u="${this.lastKey}"]`) as HTMLButtonElement | null) : null;
+    this.setFocus(restore && !restore.disabled ? restore : (s.querySelector('button.b-primary') as HTMLButtonElement | null) ?? this.buttons()[0] ?? null);
     return s;
+  }
+
+  // ---------------------------------------------------------------- controller navigation
+
+  private buttons(): HTMLButtonElement[] {
+    return this.screen ? (Array.from(this.screen.querySelectorAll('button')) as HTMLButtonElement[]).filter((b) => !b.disabled) : [];
+  }
+
+  private setFocus(b: HTMLButtonElement | null) {
+    this.focusEl?.classList.remove('focus');
+    this.focusEl = b;
+    if (b) {
+      b.classList.add('focus');
+      this.lastKey = keyOf(b);
+      b.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  /** Move focus to the nearest enabled button in a direction (spatial navigation). */
+  nav(dx: number, dy: number) {
+    const list = this.buttons();
+    if (!list.length) return;
+    const cur = this.focusEl && list.includes(this.focusEl) ? this.focusEl : null;
+    if (!cur) {
+      this.setFocus(list[0]);
+      return;
+    }
+    const a = cur.getBoundingClientRect();
+    const ax = a.left + a.width / 2,
+      ay = a.top + a.height / 2;
+    // Pass 1: controls in the same row (horizontal moves) or column (vertical moves).
+    // Pass 2: anything in that direction, weighted toward staying in line.
+    let best: HTMLButtonElement | null = null;
+    for (const pass of [1, 2]) {
+      let bestScore = Infinity;
+      for (const b of list) {
+        if (b === cur) continue;
+        const r = b.getBoundingClientRect();
+        const bx = r.left + r.width / 2,
+          by = r.top + r.height / 2;
+        const along = dx ? (bx - ax) * dx : (by - ay) * dy;
+        if (along <= 4) continue;
+        const overlap = dx ? r.top < a.bottom - 2 && r.bottom > a.top + 2 : r.left < a.right - 2 && r.right > a.left + 2;
+        if (pass === 1 && !overlap) continue;
+        const across = dx ? Math.abs(by - ay) : Math.abs(bx - ax);
+        const score = pass === 1 ? along + across * 0.1 : along + across * 2.5;
+        if (score < bestScore) {
+          bestScore = score;
+          best = b;
+        }
+      }
+      if (best) break;
+    }
+    if (best) this.setFocus(best);
+  }
+
+  activate() {
+    this.focusEl?.click();
+  }
+
+  back() {
+    this.backAction?.();
   }
 
   private on(sel: string, fn: () => void) {
@@ -59,19 +142,28 @@ export class Menus {
       });
   }
 
-  title(save: SaveData, h: { newRun: () => void; hangar: () => void; toggleAssist: () => void; pixel: () => void }) {
+  title(
+    save: SaveData,
+    pad: PadStatus,
+    h: { newRun: () => void; hangar: () => void; toggleAssist: () => void; pixel: () => void; padLayout: () => void; rumble: () => void },
+  ) {
     this.show(
       `<div class="logo">TINY<span>WAR</span></div>
        <div class="sub">voxel rotor-wing roguelike · tech demo</div>
        <div class="btns">
          <button class="b-primary" data-a="new">START RUN</button>
          <button data-a="hangar">HANGAR <small>${save.credits} CR</small></button>
-         <button data-a="assist">FLIGHT ASSISTS: ${save.settings.assists ? 'ON (SAS)' : 'OFF (FULL SIM)'}</button>
+       </div>
+       <div class="settings">
+         <button data-a="assist">ASSISTS: ${save.settings.assists ? 'ON (SAS)' : 'OFF (FULL SIM)'}</button>
          <button data-a="pixel">PIXEL SIZE: ${['HD', 'x2', 'x3'][save.settings.pixelScale - 1]}</button>
+         <button data-a="layout">PAD LAYOUT: ${pad.layout === 'pilot' ? 'PILOT' : 'GUNSHIP'}</button>
+         <button data-a="rumble">VIBRATION: ${pad.rumble ? 'ON' : 'OFF'}</button>
        </div>
        <div class="controls">
          <div><b>FLY</b> W/S cyclic fwd/back · A/D cyclic left/right · Q/E pedals (yaw) · SPACE/SHIFT collective up/down</div>
          <div><b>FIGHT</b> mouse aims chin gun · LMB cannon · RMB rockets (fly the ◇ pipper onto target) · F missile · X flares</div>
+         <div><b>CONTROLLER</b> ${pad.connected ? `<span class="pad-name">${pad.name}</span> · ${pad.help}` : 'plug in any gamepad and press a button · Gunship = twin-stick (fly + aim), Pilot = collective/pedals on the left stick, cyclic on the right'}</div>
          <div><b>LOGISTICS</b> hover low over crates to winch · land at downed crews to board them · land on the FARP pad to refuel, rearm, bank credits</div>
          <div class="dim">Best sector reached: ${save.bestSector} · Runs flown: ${save.runs} · Crew rescued: ${save.rescuedTotal}</div>
        </div>`,
@@ -81,6 +173,8 @@ export class Menus {
     this.on('[data-a=hangar]', h.hangar);
     this.on('[data-a=assist]', h.toggleAssist);
     this.on('[data-a=pixel]', h.pixel);
+    this.on('[data-a=layout]', h.padLayout);
+    this.on('[data-a=rumble]', h.rumble);
   }
 
   briefing(b: BriefingInfo, onLaunch: () => void) {
@@ -133,20 +227,24 @@ export class Menus {
        <div class="stats">FUEL ${Math.round(stats.maxFuel)} · ARMOR ${stats.maxHp} · T/W ${stats.twr.toFixed(2)} · TILT ${Math.round((stats.maxTilt * 180) / Math.PI)}° · GUN ${stats.gunAmmo} · RKT ${stats.rockets} · MSL ${stats.missiles} · FLR ${stats.flares} · SEATS ${stats.cabin}</div>
        <div class="btns">${h.back ? '<button data-a="back">◂ BACK</button>' : ''}<button class="b-primary" data-a="go">${nextLabel}</button></div>`,
       'hangar',
+      h.back ?? null,
     );
     for (const u of UPGRADES) this.on(`[data-u=${u.id}]`, () => h.buy(u));
     this.on('[data-a=go]', h.launch);
     if (h.back) this.on('[data-a=back]', h.back);
   }
 
-  pause(h: { resume: () => void; abort: () => void }) {
+  pause(pad: PadStatus, h: { resume: () => void; abort: () => void; padLayout: () => void }) {
     this.show(
       `<div class="h">PAUSED</div>
-       <div class="btns"><button class="b-primary" data-a="r">RESUME</button><button data-a="q">ABANDON RUN</button></div>`,
+       <div class="btns"><button class="b-primary" data-a="r">RESUME</button><button data-a="layout">PAD LAYOUT: ${pad.layout === 'pilot' ? 'PILOT' : 'GUNSHIP'}</button><button data-a="q">ABANDON RUN</button></div>
+       ${pad.connected ? `<div class="dim pad-help">${pad.help}</div>` : ''}`,
       'pause',
+      h.resume,
     );
     this.on('[data-a=r]', h.resume);
     this.on('[data-a=q]', h.abort);
+    this.on('[data-a=layout]', h.padLayout);
   }
 
   loading(text: string) {

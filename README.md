@@ -30,6 +30,22 @@ You need a desktop browser with WebGL2. The build is about 680 KB of JS (about 1
 | **H** | toggle flight assists (SAS on, or full manual) |
 | **M** map · **P** pixel size · **Wheel** zoom · **Esc** pause · **`** debug stats |
 
+### Controller
+
+Any controller with the browser's standard gamepad mapping works (Xbox, PlayStation, Switch Pro, most generic pads). Plug it in and press a button. The game switches to controller prompts and button labels, and switches back as soon as you touch the keyboard or mouse. Menus work with the D-pad or left stick, **A** to confirm and **B** to go back. You can switch layouts and turn vibration on or off from the title screen or the pause menu.
+
+| | **Gunship** (default, twin-stick) | **Pilot** (sim-style) |
+|---|---|---|
+| Left stick | cyclic (fly) | collective ▴▾ + pedals ◂▸ |
+| Right stick | aim the cannon (reticle around the aircraft, slight aim assist) | cyclic |
+| RT / LT | cannon / rockets | cannon (an auto-gunner tracks the nearest threat ahead) / rockets |
+| RB / LB | climb / descend | missile / flares |
+| D-pad | ◂▸ pedals, ▴▾ zoom | ▴▾ zoom |
+| A / B | missile / flares | — |
+| Y · View · Menu | map · toggle SAS · pause | map · toggle SAS · pause |
+
+PlayStation controllers show ✕ ○ □ △ and L1/R1/L2/R2 labels instead. Some browsers won't start audio until you click or press a key once, because a controller button press may not count as a user gesture. The game shows a hint when this happens.
+
 ## Game loop
 
 1. Take off from the **FARP**, your forward rearm and refuel pad.

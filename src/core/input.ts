@@ -14,10 +14,13 @@ export class Input {
   mmb = false;
   wheel = 0;
   private mPressed = new Set<number>();
+  /** performance.now() of the last keyboard / mouse input (for device switching) */
+  lastUsed = -Infinity;
 
   constructor(private el: HTMLElement) {
     window.addEventListener('keydown', (e) => {
       if (e.repeat) return;
+      this.lastUsed = performance.now();
       this.down.add(e.code);
       this.pressed.add(e.code);
       if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) e.preventDefault();
@@ -27,8 +30,12 @@ export class Input {
       this.down.clear();
       this.lmb = this.rmb = this.mmb = false;
     });
-    el.addEventListener('mousemove', (e) => this.move(e));
+    el.addEventListener('mousemove', (e) => {
+      if (Math.abs(e.movementX) + Math.abs(e.movementY) > 3) this.lastUsed = performance.now();
+      this.move(e);
+    });
     el.addEventListener('mousedown', (e) => {
+      this.lastUsed = performance.now();
       this.move(e);
       if (e.button === 0) this.lmb = true;
       if (e.button === 1) {
@@ -48,6 +55,7 @@ export class Input {
       'wheel',
       (e) => {
         this.wheel += Math.sign(e.deltaY);
+        this.lastUsed = performance.now();
         e.preventDefault();
       },
       { passive: false },

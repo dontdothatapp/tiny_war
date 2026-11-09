@@ -79,11 +79,25 @@ Player weapons:
 
 The brief said there are no humans on the map. Downed crews are therefore shown only as red signal smoke and a strobe, never as figures. You land next to the smoke and they board. Tell me if you'd prefer visible survivors or captured soldiers in compounds.
 
-## 7. Code map
+## 7. Controller support
+
+`src/core/gamepad.ts`, the `pollInput` / `menuPad` / `stickAim` / `autoAim` methods in `game.ts`, and focus navigation in `ui/menus.ts`
+
+- The game reads the standard Gamepad API mapping once per simulation step. Sticks use a radial dead zone (16%) and an expo curve on the cyclic for fine control near centre. The triggers have their own small dead zone.
+- **Analog flight.** Stick deflection goes straight into the same `HeliControls` as the keyboard (the two are summed and clamped). With SAS on, half deflection means half the maximum tilt or half the maximum climb rate.
+- **Two layouts.**
+  - *Gunship* (twin-stick): the left stick flies and the right stick places the cannon reticle around the aircraft. Push further to aim further. When you let go, the reticle drifts back ahead of the nose. Light magnetism pulls it onto emplacements, which also handles missile lock.
+  - *Pilot*: closer to real helicopter hands, with collective and pedals on the left stick and cyclic on the right. A virtual gunner aims the cannon at the most threatening emplacement within about 70° of the nose.
+- **Device switching.** Whichever device you used last decides the prompts, the HUD help text, mouse-cursor visibility and whether the controller vibrates.
+- **Menus.** Spatial focus navigation moves within the same row or column first, then to the nearest control in that direction. Holding a direction repeats after a short delay. Focus stays on the same control when a screen re-renders, for example after a toggle or a purchase.
+- **Rumble.** Cannon fire, rocket and missile launches, taking damage, nearby explosions, winching and losing the aircraft all vibrate the controller. It uses `vibrationActuator` where available and `hapticActuators` as a fallback.
+- **Testing:** the Playwright scripts stub `navigator.getGamepads()` with a scripted controller.
+
+## 8. Code map
 
 ```
 src/
-  core/      rng+noise, input, procedural audio (WebAudio)
+  core/      rng+noise, keyboard/mouse input, gamepad, procedural audio (WebAudio)
   voxel/     world (chunks), mesher, chunk renderer, material + shader,
              destruction, falling bodies, model meshing
   world/     map generator, prefabs (buildings, vehicles, palms…), VoxModel
@@ -95,12 +109,12 @@ src/
 
 `window.game.simulate(seconds)` advances the simulation without rendering, which is handy for automated tests and bots.
 
-## 8. Roadmap and more ideas
+## 9. Roadmap and more ideas
 
 **Near term (polish and performance)**
 - Move meshing and connectivity searches into a **Web Worker pool** so large collapses don't hitch.
 - Batch the instanced chunk draw calls, generate the shadow cascade from the chunk AABBs only, and adapt the chunk radius to the GPU.
-- Add gamepad support (twin sticks map naturally onto cyclic, collective and pedals), plus key remapping.
+- Add key and button remapping, and per-stick sensitivity settings.
 - Add a tutorial sector and a free-flight sandbox.
 
 **Gameplay ideas**

@@ -96,6 +96,11 @@ export class Audio {
     wn.start();
   }
 
+  /** Browsers only start audio after a click or key press (gamepad input doesn't count). */
+  get blocked(): boolean {
+    return !this.ctx || this.ctx.state !== 'running';
+  }
+
   setVolume(v: number) {
     this.volume = v;
     if (this.ctx) this.master.gain.value = v;

@@ -47,6 +47,8 @@ export interface RadarBlip {
   shape?: 'dot' | 'square' | 'diamond' | 'ring';
 }
 
+export const KEYBOARD_HELP = `W/S cyclic fwd/back · A/D cyclic left/right · Q/E pedals · SPACE/SHIFT collective<br>LMB cannon · RMB rockets · F missile (hover target to lock) · X flares · H assists · M map · P pixels · ESC pause`;
+
 const el = (tag: string, cls: string, parent: HTMLElement, html = '') => {
   const e = document.createElement(tag);
   e.className = cls;
@@ -88,12 +90,7 @@ export class Hud {
     this.flightEl = el('div', 'hud-panel hud-flight', this.root);
     this.warnEl = el('div', 'hud-warn', this.root);
     this.msgEl = el('div', 'hud-msgs', this.root);
-    this.helpEl = el(
-      'div',
-      'hud-help',
-      this.root,
-      `W/S cyclic fwd/back · A/D cyclic left/right · Q/E pedals · SPACE/SHIFT collective<br>LMB cannon · RMB rockets · F missile (hover target to lock) · X flares · H assists · M map · P pixels · ESC pause`,
-    );
+    this.helpEl = el('div', 'hud-help', this.root, KEYBOARD_HELP);
     this.mapEl = el('div', 'hud-map', this.root);
     this.mapCanvas = el('canvas', '', this.mapEl) as HTMLCanvasElement;
     this.mapCanvas.width = this.mapCanvas.height = 640;
@@ -125,6 +122,11 @@ export class Hud {
 
   showHelp(v: boolean) {
     this.helpEl.style.opacity = v ? '1' : '0';
+  }
+
+  /** Swap the controls cheat-sheet (keyboard vs controller). */
+  setHelp(html: string) {
+    if (this.helpEl.innerHTML !== html) this.helpEl.innerHTML = html;
   }
 
   damageFlash(amount: number) {
