@@ -5,6 +5,8 @@ import { buildModelMesh } from '../voxel/modelMesh';
 import { createVoxelMaterial } from '../voxel/voxelMaterial';
 import { VoxelWorld } from '../voxel/world';
 import type { TurretType } from '../world/mapTypes';
+import { RNG } from '../core/rng';
+import { tankParts } from '../world/prefabs';
 import { VoxModel } from '../world/voxModel';
 
 export interface TurretSpec {
@@ -56,76 +58,152 @@ interface TurretParts {
 function parts(type: TurretType): TurretParts {
   const D = M.METAL_DARK,
     O = M.METAL_TAN,
-    O2 = M.OLIVE_DARK;
+    O2 = M.OLIVE_DARK,
+    S = M.STEEL;
   if (type === 'mg') {
-    const head = new VoxModel(6, 5, 6);
-    head.box(1, 0, 1, 4, 1, 4, D);
-    head.box(2, 2, 2, 3, 4, 3, D);
-    head.box(0, 2, 3, 5, 4, 3, O); // shield
-    const gun = new VoxModel(3, 3, 12);
-    gun.box(0, 0, 7, 2, 2, 11, D);
-    gun.box(1, 1, 0, 1, 1, 7, M.STEEL);
-    return { base: null, head, gun, scale: 0.5, basePivot: [0, 0, 0], headPivot: [3, 0, 3], headY: 0, gunPivot: [1.5, 1.5, 9], gunY: 2.0, muzzle: 4.5, radius: 3 };
+    // tripod heavy MG with ammo can and a gun shield
+    const head = new VoxModel(9, 7, 9);
+    head.line(4, 3, 4, 0, 0, 7, D);
+    head.line(4, 3, 4, 8, 0, 7, D);
+    head.line(4, 3, 4, 4, 0, 0, D);
+    head.box(3, 3, 3, 5, 4, 5, D);
+    head.box(0, 3, 2, 8, 6, 2, O2); // shield
+    head.box(3, 5, 2, 5, 5, 2, 0); // sight slit
+    head.box(6, 3, 5, 7, 4, 7, O2);
+    head.set(7, 4, 6, M.YELLOW_MARK);
+    const gun = new VoxModel(3, 3, 16);
+    gun.box(0, 0, 10, 2, 2, 15, D);
+    gun.box(1, 2, 12, 1, 2, 13, S);
+    for (let z = 2; z < 10; z++) gun.set(1, 1, z, z % 2 ? S : D);
+    gun.box(0, 1, 0, 2, 1, 1, D);
+    gun.box(1, 0, 0, 1, 2, 1, D);
+    return { base: null, head, gun, scale: 0.5, basePivot: [0, 0, 0], headPivot: [4.5, 0, 4.5], headY: 0, gunPivot: [1.5, 1.5, 11], gunY: 2.0, muzzle: 5.5, radius: 3 };
   }
   if (type === 'aaa') {
-    const head = new VoxModel(12, 7, 12);
-    head.cylinder(5.5, 5.5, 5.5, 0, 1, O);
-    head.box(2, 2, 3, 9, 5, 9, O);
-    head.box(3, 6, 4, 8, 6, 8, O2);
-    head.box(4, 3, 9, 7, 4, 9, M.GLASS);
-    const gun = new VoxModel(10, 4, 18);
-    for (const x of [0, 2, 7, 9]) gun.box(x, 1, 0, x, 1, 12, M.STEEL);
-    for (const x of [1, 8]) gun.box(x, 2, 0, x, 2, 12, M.STEEL);
-    gun.box(0, 0, 12, 9, 3, 17, D);
-    return { base: null, head, gun, scale: 0.5, basePivot: [0, 0, 0], headPivot: [6, 0, 6], headY: 0, gunPivot: [5, 2, 15], gunY: 3.0, muzzle: 7.5, radius: 4 };
+    // twin-barrel AA gun on a turntable with ammo boxes and a gunner's seat
+    const head = new VoxModel(13, 8, 13);
+    head.cylinder(6, 6, 6, 0, 0, D);
+    head.cylinder(6, 6, 5.4, 1, 1, O);
+    head.box(1, 2, 3, 2, 6, 8, O); // cradle side plates
+    head.box(10, 2, 3, 11, 6, 8, O);
+    head.box(0, 2, 4, 0, 4, 7, O2); // ammo boxes
+    head.box(12, 2, 4, 12, 4, 7, O2);
+    head.set(0, 4, 5, M.YELLOW_MARK);
+    head.set(12, 4, 5, M.YELLOW_MARK);
+    head.box(5, 2, 9, 7, 3, 10, O2); // seat
+    head.box(6, 4, 10, 6, 5, 10, D);
+    head.box(6, 6, 7, 6, 7, 7, D); // sight post
+    head.set(6, 7, 6, M.GLASS);
+    const gun = new VoxModel(11, 5, 22);
+    for (const x of [2, 8]) {
+      gun.box(x - 1, 1, 13, x + 1, 3, 18, D); // receivers
+      for (let z = 2; z < 13; z++) gun.set(x, 2, z, z < 9 && z % 3 === 0 ? D : S);
+      gun.box(x, 1, 0, x, 3, 1, D); // flash hiders
+      gun.box(x - 1, 2, 0, x + 1, 2, 1, D);
+    }
+    gun.box(3, 2, 15, 7, 2, 16, O2);
+    gun.box(4, 3, 16, 6, 4, 18, O);
+    return { base: null, head, gun, scale: 0.5, basePivot: [0, 0, 0], headPivot: [6.5, 0, 6.5], headY: 0, gunPivot: [5.5, 2.5, 16], gunY: 3.0, muzzle: 8, radius: 4 };
   }
   if (type === 'flak') {
-    const head = new VoxModel(14, 8, 14);
-    head.cylinder(6.5, 6.5, 6.5, 0, 1, D);
-    head.box(2, 2, 2, 11, 3, 11, O);
-    head.box(1, 4, 9, 12, 7, 10, O); // gun shield
-    const gun = new VoxModel(6, 6, 26);
-    gun.hcylinder('z', 0, 18, 3, 3, 1.2, M.STEEL);
-    gun.hcylinder('z', 0, 1, 3, 3, 1.8, D);
-    gun.box(1, 1, 18, 4, 5, 25, D);
-    return { base: null, head, gun, scale: 0.5, basePivot: [0, 0, 0], headPivot: [7, 0, 7], headY: 0, gunPivot: [3, 3, 21], gunY: 3.0, muzzle: 10.5, radius: 4.5 };
+    // heavy gun on a cruciform carriage: outriggers static, upper carriage turns
+    const base = new VoxModel(22, 3, 22);
+    for (const [dx, dz] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ]) {
+      for (let i = 2; i <= 10; i++) base.set(11 + dx * i, 0, 11 + dz * i, O2);
+      base.box(11 + dx * 10 - 1, 0, 11 + dz * 10 - 1, 11 + dx * 10 + 1, 0, 11 + dz * 10 + 1, D);
+    }
+    base.cylinder(11, 11, 3, 0, 1, D);
+    const head = new VoxModel(15, 10, 15);
+    head.cylinder(7, 7, 4.5, 0, 1, O);
+    head.box(3, 2, 4, 4, 6, 10, O);
+    head.box(10, 2, 4, 11, 6, 10, O);
+    // angled gun shield
+    for (let x = 0; x <= 14; x++) {
+      const bend = Math.abs(x - 7) > 4 ? 1 : 0;
+      head.box(x, 3, 3 + bend, x, 8, 3 + bend, O);
+    }
+    head.box(6, 4, 3, 8, 6, 3, 0); // barrel opening
+    head.box(1, 2, 9, 2, 3, 10, O2); // seats
+    head.box(12, 2, 9, 13, 3, 10, O2);
+    head.box(11, 4, 11, 13, 5, 12, D); // shells rack
+    const gun = new VoxModel(7, 7, 30);
+    gun.hcylinder('z', 0, 20, 3, 3, 1.1, S);
+    gun.hcylinder('z', 0, 2, 3, 3, 2, D); // muzzle brake
+    gun.box(1, 3, 0, 5, 3, 1, D);
+    gun.hcylinder('z', 12, 22, 5, 3, 0.8, O2); // recuperator above barrel
+    gun.box(1, 1, 20, 5, 5, 27, D); // breech
+    gun.box(2, 2, 28, 4, 4, 29, O2);
+    return { base, head, gun, scale: 0.5, basePivot: [11, 0, 11], headPivot: [7.5, 0, 7.5], headY: 0.8, gunPivot: [3.5, 3.5, 22], gunY: 3.0, muzzle: 11, radius: 4.5 };
   }
   if (type === 'sam') {
-    const base = new VoxModel(16, 5, 16);
-    base.box(1, 0, 1, 14, 2, 14, O2);
-    base.box(0, 0, 3, 15, 1, 4, M.RUBBER);
-    base.box(0, 0, 11, 15, 1, 12, M.RUBBER);
-    base.cylinder(7.5, 7.5, 3.5, 3, 4, D);
-    const head = new VoxModel(8, 4, 8);
-    head.box(1, 0, 1, 6, 3, 6, O2);
-    const gun = new VoxModel(14, 8, 26);
-    // 4 missiles on a rack
+    // launcher on a 6-wheel chassis: cab, outriggers, turntable, 4-round canister rack
+    const base = new VoxModel(18, 7, 30);
+    for (const z of [3, 9, 22]) {
+      base.box(0, 0, z, 1, 2, z + 2, M.RUBBER);
+      base.box(16, 0, z, 17, 2, z + 2, M.RUBBER);
+      base.set(0, 1, z + 1, M.METAL_LIGHT);
+      base.set(17, 1, z + 1, M.METAL_LIGHT);
+    }
+    base.box(2, 2, 1, 15, 4, 28, O2);
+    base.box(2, 5, 1, 15, 6, 6, O2); // cab
+    base.box(3, 5, 0, 14, 5, 0, M.GLASS);
+    base.box(2, 5, 3, 2, 5, 5, M.GLASS);
+    base.box(15, 5, 3, 15, 5, 5, M.GLASS);
+    base.set(3, 3, 0, M.LAMP);
+    base.set(14, 3, 0, M.LAMP);
+    for (const [x, z] of [
+      [0, 13],
+      [17, 13],
+      [0, 26],
+      [17, 26],
+    ])
+      base.box(x, 0, z, x, 3, z, D);
+    base.cylinder(9, 17, 4, 5, 5, D);
+    base.box(3, 5, 24, 6, 6, 27, O2); // generator
+    const head = new VoxModel(10, 6, 10);
+    head.cylinder(5, 5, 4.5, 0, 0, O2);
+    head.box(1, 1, 3, 2, 5, 7, D);
+    head.box(7, 1, 3, 8, 5, 7, D);
+    head.box(3, 1, 7, 6, 3, 9, O2); // guidance box
+    head.box(4, 4, 8, 5, 5, 9, M.DISH);
+    const gun = new VoxModel(14, 10, 26);
     for (const [x, y] of [
       [1, 1],
       [8, 1],
-      [1, 5],
-      [8, 5],
+      [1, 6],
+      [8, 6],
     ]) {
-      gun.box(x, y, 2, x + 3, y + 1, 23, M.PLASTER_WHITE);
-      gun.box(x, y, 0, x + 3, y + 1, 1, M.RED_MARK);
-      gun.box(x + 1, y + 2, 20, x + 2, y + 2, 23, M.PLASTER_WHITE);
+      gun.box(x, y, 1, x + 4, y + 2, 24, M.PLASTER_WHITE);
+      gun.box(x, y, 0, x + 4, y + 2, 0, M.RED_MARK);
+      gun.box(x, y, 8, x + 4, y + 2, 8, M.OLIVE_LIGHT);
+      gun.box(x, y, 17, x + 4, y + 2, 17, M.OLIVE_LIGHT);
+      gun.box(x, y, 25, x + 4, y + 2, 25, D);
     }
-    gun.box(5, 0, 8, 7, 7, 16, D);
-    return { base, head, gun, scale: 0.5, basePivot: [8, 0, 8], headPivot: [4, 0, 4], headY: 2.5, gunPivot: [6.5, 3.5, 12], gunY: 2.5, muzzle: 6, radius: 5 };
+    gun.box(6, 0, 6, 7, 9, 19, D); // central frame
+    gun.box(0, 4, 10, 13, 5, 11, D);
+    return { base, head, gun, scale: 0.5, basePivot: [9, 0, 17], headPivot: [5, 0, 5], headY: 3.0, gunPivot: [7, 5, 14], gunY: 3.0, muzzle: 7, radius: 5 };
   }
-  // tank, full voxel scale to match world vehicles
-  const camo = M.METAL_TAN;
-  const base = new VoxModel(11, 5, 18);
-  base.box(0, 0, 1, 2, 2, 15, M.RUBBER);
-  base.box(8, 0, 1, 10, 2, 15, M.RUBBER);
-  base.box(0, 2, 0, 10, 4, 16, camo);
-  base.box(1, 3, 0, 9, 3, 0, M.OLIVE_DARK);
-  const head = new VoxModel(8, 3, 9);
-  head.box(0, 0, 0, 7, 2, 8, camo);
-  head.box(1, 2, 4, 3, 2, 6, M.OLIVE_DARK);
-  const gun = new VoxModel(2, 2, 12);
-  gun.box(0, 0, 0, 1, 1, 11, M.METAL_DARK);
-  return { base, head, gun, scale: 1, basePivot: [5.5, 0, 8], headPivot: [4, 0, 5], headY: 5, gunPivot: [1, 1, 12], gunY: 1.2, gunZ: -3, muzzle: 11, radius: 6 };
+  // tank: same parts as the world vehicle prefab, turned to face -Z
+  const tp = tankParts(new RNG(77), M.METAL_TAN);
+  return {
+    base: tp.hull.rotated(3),
+    head: tp.turret.rotated(3),
+    gun: tp.barrel.rotated(3),
+    scale: 1,
+    basePivot: [6.5, 0, 10.5],
+    headPivot: [4.5, 0, 5.5],
+    headY: 5,
+    gunPivot: [1.5, 1.5, 11],
+    gunY: 1.5,
+    gunZ: -5.5,
+    muzzle: 11,
+    radius: 6,
+  };
 }
 
 export class Turret {

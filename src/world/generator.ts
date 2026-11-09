@@ -792,7 +792,7 @@ export class MapGenerator implements ChunkFiller {
     const S = this.S;
     const area = (S / 256) ** 2;
     // shrubs
-    for (let i = 0; i < 90 * area; i++) this.placeCentered(P.shrub(r), r.range(8, S - 8), r.range(8, S - 8));
+    for (let i = 0; i < 65 * area; i++) this.placeCentered(P.shrub(r), r.range(8, S - 8), r.range(8, S - 8));
     // rocks
     for (let i = 0; i < 18 * area; i++) this.placeCentered(P.rock(r), r.range(8, S - 8), r.range(8, S - 8), { sink: 1 });
     // lone palms

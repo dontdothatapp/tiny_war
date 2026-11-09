@@ -8,27 +8,40 @@ import { VoxModel } from '../world/voxModel';
 const mat = createVoxelMaterial({ localHash: true });
 
 function pickupModel(type: PickupType): VoxModel {
-  const m = new VoxModel(8, 6, 8);
+  const m = new VoxModel(10, 8, 10);
+  // pallet
+  m.box(0, 0, 0, 9, 0, 9, (x) => (x % 3 === 0 ? M.WOOD_DOOR : M.CRATE));
   if (type === 'fuel') {
+    // four drums with rims, a yellow band and bungs on top
     for (const [x, z] of [
-      [0, 0],
-      [4, 0],
-      [0, 4],
-      [4, 4],
+      [2.5, 2.5],
+      [7, 2.5],
+      [2.5, 7],
+      [7, 7],
     ]) {
-      m.cylinder(x + 1.5, z + 1.5, 1.7, 0, 4, M.RED_MARK);
-      m.box(x + 1, 5, z + 1, x + 2, 5, z + 2, M.METAL_DARK);
+      m.cylinder(x, z, 2, 1, 6, (_x, y) => (y === 1 || y === 6 ? M.METAL_DARK : y === 4 ? M.YELLOW_MARK : M.RED_MARK));
+      m.cylinder(x, z, 1.4, 7, 7, M.RED_MARK);
+      m.set(x - 0.5, 7, z - 0.5, M.METAL_DARK);
     }
-    m.box(0, 2, 0, 7, 2, 7, (x, _y, z) => (m.get(x, 2, z) ? M.YELLOW_MARK : -1));
   } else if (type === 'ammo') {
-    m.box(0, 0, 1, 7, 3, 6, M.OLIVE_DARK);
-    m.box(0, 4, 1, 7, 4, 6, M.METAL_OLIVE);
-    m.box(1, 2, 1, 6, 2, 1, M.YELLOW_MARK);
-    m.box(1, 2, 6, 6, 2, 6, M.YELLOW_MARK);
+    // olive ammunition crate with lid seam, stencil band and rope handles, small box on top
+    m.box(0, 1, 1, 9, 4, 8, M.OLIVE_DARK);
+    m.box(0, 5, 1, 9, 5, 8, M.OLIVE_LIGHT);
+    m.box(0, 3, 1, 9, 3, 1, M.YELLOW_MARK);
+    m.box(0, 3, 8, 9, 3, 8, M.YELLOW_MARK);
+    for (const x of [0, 9]) m.box(x, 2, 4, x, 2, 5, M.CANVAS_DARK);
+    m.box(2, 6, 3, 6, 7, 6, M.OLIVE_DARK);
+    m.box(2, 7, 4, 6, 7, 5, M.OLIVE_LIGHT);
+    m.set(4, 6, 6, M.YELLOW_MARK);
   } else {
-    m.box(1, 0, 1, 6, 4, 6, M.PLASTER_WHITE);
-    m.box(1, 2, 1, 6, 2, 6, M.LIGHT_GREEN);
-    m.box(3, 5, 3, 4, 5, 4, M.LIGHT_GREEN);
+    // white repair kit with a green band and a wrench on the lid
+    m.box(1, 1, 1, 8, 5, 8, M.PLASTER_WHITE);
+    m.box(1, 3, 1, 8, 3, 8, M.LIGHT_GREEN);
+    m.box(2, 6, 4, 7, 6, 5, M.METAL_LIGHT);
+    m.box(2, 6, 3, 2, 6, 6, M.METAL_LIGHT);
+    m.box(7, 6, 3, 7, 6, 6, M.METAL_LIGHT);
+    m.set(2, 6, 4, 0);
+    m.set(2, 6, 5, 0);
   }
   return m;
 }
@@ -46,7 +59,7 @@ export class Pickup {
     readonly type: PickupType,
     readonly pos: THREE.Vector3,
   ) {
-    this.obj = buildModelMesh(pickupModel(type), mat, [4, 0, 4], 0.5);
+    this.obj = buildModelMesh(pickupModel(type), mat, [5, 0, 5], 0.5);
     this.obj.position.copy(pos);
     this.obj.rotation.y = Math.random() * Math.PI;
   }

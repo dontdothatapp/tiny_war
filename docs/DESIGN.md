@@ -124,6 +124,15 @@ src/
 
 `window.game.simulate(seconds)` advances the simulation without rendering, which is handy for automated tests and bots.
 
+**Model gallery** (`src/dev/gallery.ts`): open the game with `?gallery=aircraft|units|buildings|vehicles|nature|props` to see every model under the game's lighting. Optional parameters: `&angle=low` for a lower camera, `&zoom=0.5`, `&only=<index>` for one model, `&seed=<n>` for other variations.
+
+**Model conventions:**
+- World prefabs use 1 voxel = 0.5 m. The helicopter, the enemy units and the pickups use half-size voxels so they read slightly finer.
+- Detail comes from a few dedicated materials: light trim for frames, sills and cornices; darker base bands; shutter colours; light metal; tracks; lamps; palm rings; camo shades.
+- Two-tone camouflage uses low-frequency noise.
+- Wrecks keep their silhouette, mixing soot, burnt metal, surviving paint and rust.
+- Mass you can't see (floors, aprons, solid bases) counts against structural integrity, so leave it out of destructible objectives.
+
 ## 9. Roadmap and more ideas
 
 **Near term (polish and performance)**

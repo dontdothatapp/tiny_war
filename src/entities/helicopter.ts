@@ -371,7 +371,7 @@ export class Helicopter {
     v.tailRotor.rotation.x = this.tailAngle;
     const blur = clamp((this.rpm - 0.4) / 0.6, 0, 1);
     (v.rotorBlur.material as THREE.MeshBasicMaterial).opacity = blur * 0.32;
-    for (const c of v.rotor.children) c.visible = blur < 0.95 || Math.random() < 0.5;
+    for (const c of v.rotor.children) if (c.children.length) c.visible = blur < 0.95 || Math.random() < 0.5;
     this.shake = Math.max(0, this.shake - dt * 1.6);
   }
 
