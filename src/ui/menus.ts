@@ -144,7 +144,7 @@ export class Menus {
   title(
     save: SaveData,
     pad: PadStatus,
-    h: { newRun: () => void; hangar: () => void; toggleAssist: () => void; pixel: () => void; rumble: () => void },
+    h: { newRun: () => void; hangar: () => void; music: () => void; toggleAssist: () => void; pixel: () => void; rumble: () => void },
   ) {
     this.show(
       `<div class="logo">TINY<span>WAR</span></div>
@@ -157,6 +157,7 @@ export class Menus {
          <button data-a="assist">ASSISTS: ${save.settings.assists ? 'ON (SAS)' : 'OFF (FULL SIM)'}</button>
          <button data-a="pixel">PIXEL SIZE: ${['HD', 'x2', 'x3'][save.settings.pixelScale - 1]}</button>
          <button data-a="rumble">VIBRATION: ${pad.rumble ? 'ON' : 'OFF'}</button>
+         <button data-a="music">MUSIC: ${save.settings.music ? 'ON' : 'OFF'}</button>
        </div>
        <div class="controls">
          <div><b>FLY</b> W/S cyclic fwd/back · A/D cyclic left/right · Q/E pedals (yaw) · SPACE/SHIFT collective up/down</div>
@@ -173,6 +174,7 @@ export class Menus {
     this.on('[data-a=assist]', h.toggleAssist);
     this.on('[data-a=pixel]', h.pixel);
     this.on('[data-a=rumble]', h.rumble);
+    this.on('[data-a=music]', h.music);
   }
 
   briefing(b: BriefingInfo, onLaunch: () => void) {

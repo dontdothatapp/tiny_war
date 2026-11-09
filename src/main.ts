@@ -5,6 +5,9 @@ const app = document.getElementById('app')!;
 if (new URLSearchParams(location.search).has('gallery')) {
   // developer model gallery (?gallery=aircraft|units|buildings|vehicles|nature|props)
   import('./dev/gallery').then((m) => m.runGallery(app));
+} else if (new URLSearchParams(location.search).has('sounds')) {
+  // developer sound board: every generated sound with a player
+  import('./dev/sounds').then((m) => m.runSoundBoard(app));
 } else {
   const game = new Game(app);
   game.boot();

@@ -87,13 +87,13 @@ export interface SaveData {
   bestSector: number;
   runs: number;
   rescuedTotal: number;
-  settings: { pixelScale: number; assists: boolean; volume: number; rumble: boolean };
+  settings: { pixelScale: number; assists: boolean; volume: number; rumble: boolean; music: boolean };
 }
 
 const KEY = 'tinywar.save.v1';
 
 export function defaultSave(): SaveData {
-  return { version: 1, credits: 0, levels: {}, bestSector: 1, runs: 0, rescuedTotal: 0, settings: { pixelScale: 2, assists: true, volume: 0.7, rumble: true } };
+  return { version: 1, credits: 0, levels: {}, bestSector: 1, runs: 0, rescuedTotal: 0, settings: { pixelScale: 2, assists: true, volume: 0.7, rumble: true, music: true } };
 }
 
 export function loadSave(): SaveData {

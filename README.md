@@ -12,7 +12,21 @@ npm run dev        # http://localhost:5173
 npm run build      # static build in dist/ (host anywhere: GitHub Pages, itch.io, S3…)
 ```
 
-You need a desktop browser with WebGL2. The build is about 680 KB of JS (about 185 KB gzipped). There are no art or audio files: every model, texture and sound is generated in code.
+You need a desktop browser with WebGL2. The build is about 720 KB of JS (about 200 KB gzipped) plus about 3 MB of audio. There are no art files: every model and texture is generated in code.
+
+## Sound
+
+The music and most sound effects are 8-bit samples generated with [ElevenLabs](https://elevenlabs.io) and stored in `public/audio/`. The warning alarms and menu beeps are synthesized in code. If an audio file is missing or hasn't loaded yet, the game plays the older synthesized version of that sound instead. Music can be switched off on the title screen.
+
+- **Listen to everything:** open the game with `?sounds` (for example `http://localhost:5173/?sounds`).
+- **Regenerate sounds:** the prompts live in [`server/generate-audio.ts`](server/generate-audio.ts). It needs an ElevenLabs key in `.env.local` (`npx -y @elevenlabs/cli@latest onboard init` sets one up) and ffmpeg.
+
+```bash
+node --env-file=.env.local server/generate-audio.ts                 # make whatever is missing
+node --env-file=.env.local server/generate-audio.ts cannon rocket   # regenerate just these
+```
+
+Raw downloads are kept in `audio-src/` (gitignored), and `--process` redoes the trimming and leveling without calling ElevenLabs. Which track plays where is set in `MUSIC_TRACKS` in [`src/core/audio.ts`](src/core/audio.ts).
 
 ## Controls
 

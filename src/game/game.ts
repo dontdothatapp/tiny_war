@@ -163,6 +163,7 @@ export class Game {
     this.stats = computeStats(this.save);
     this.rig.setPixelScale(this.save.settings.pixelScale);
     this.audio.volume = this.save.settings.volume;
+    this.audio.setMusicEnabled(this.save.settings.music);
     this.rig.scene.add(this.sectorGroup);
     const lg = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
     this.winchLine = new THREE.Line(lg, new THREE.LineBasicMaterial({ color: 0x1a1a1a }));
@@ -270,6 +271,7 @@ export class Game {
   private showTitle() {
     this.state = 'title';
     this.hud.setVisible(false);
+    this.audio.music('hangar');
     this.menus.title(this.save, this.padStatus(), {
       newRun: () => this.startRun(),
       rumble: () => {
@@ -281,6 +283,13 @@ export class Game {
         this.showTitle();
       },
       hangar: () => this.showHangar(false),
+      music: () => {
+        this.save.settings.music = !this.save.settings.music;
+        this.audio.setMusicEnabled(this.save.settings.music);
+        writeSave(this.save);
+        this.audio.ui();
+        this.showTitle();
+      },
       toggleAssist: () => {
         this.save.settings.assists = !this.save.settings.assists;
         writeSave(this.save);
@@ -316,6 +325,7 @@ export class Game {
     const r = this.run!;
     this.state = 'briefing';
     this.hud.setVisible(false);
+    this.audio.music('hangar');
     const threats = new Set<string>();
     for (const t of this.map.turrets) threats.add(TURRET_SPECS[t.type].name + 's');
     const w = this.windVec();
@@ -341,6 +351,8 @@ export class Game {
     setTimeout(() => this.hud.showHelp(false), 9000);
     this.state = 'playing';
     this.audio.init();
+    this.audio.music('mission');
+    this.audio.engineStart();
     this.hud.message('ENGINES START · ROTOR SPOOL-UP', '#9dff9a');
     const liftHint = this.padMode ? `Hold ${this.pad.glyph(BTN.RB)} to lift off` : 'Hold SPACE to lift off';
     this.hud.message(liftHint, '#9dff9a', 5000);
@@ -350,6 +362,7 @@ export class Game {
   private showHangar(midRun: boolean) {
     this.state = 'menu';
     this.hud.setVisible(false);
+    this.audio.music('hangar');
     const label = midRun && this.run ? `LAUNCH SECTOR ${this.run.sector} ▸` : 'START RUN ▸';
     // outside a run the shop shows base stats (run perks don't carry over)
     this.stats = computeStats(this.save, midRun ? this.run?.perks : undefined);
@@ -385,6 +398,8 @@ export class Game {
     this.overT = 0;
     if (!survived) {
       this.hud.message(reason, '#ff6a5a', 4000);
+      this.audio.music(null);
+      this.audio.gameOver();
     }
     void r;
   }
@@ -395,6 +410,7 @@ export class Game {
     const mins = Math.floor((performance.now() - r.startTime) / 60000);
     this.state = 'menu';
     this.hud.setVisible(false);
+    this.audio.music('hangar');
     this.menus.debrief(
       {
         title: 'RUN OVER',
@@ -432,6 +448,8 @@ export class Game {
     writeSave(this.save);
     this.state = 'menu';
     this.hud.setVisible(false);
+    this.audio.music('hangar');
+    this.audio.sectorCleared();
     this.menus.debrief(
       {
         title: `SECTOR ${r.sector} CLEARED`,
@@ -1098,6 +1116,7 @@ export class Game {
       h.hp = 0;
       h.crashed = true;
       h.engineOn = false;
+      this.audio.crash();
       this.hud.message(`AIRCRAFT LOST — ${cause.toUpperCase()}`, '#ff5a4a', 4000);
       if (h.onGround) this.heliDestroyed();
     }
@@ -1240,6 +1259,7 @@ export class Game {
     this.save.credits += r.pending;
     r.earned += r.pending;
     this.hud.message(`${r.pending} CR BANKED`, '#e8d24a');
+    this.audio.creditsBanked();
     r.pending = 0;
     writeSave(this.save);
   }
@@ -1263,6 +1283,7 @@ export class Game {
         bb[key] = true;
         this.addCredits(150, `${b.name} neutralised`);
         this.hud.message(`${b.name} NEUTRALISED`, '#9dff9a', 4000);
+        this.audio.baseDestroyed();
       }
     }
     if (this.map.bases.every((b) => this.baseDone(b))) {
@@ -1330,20 +1351,20 @@ export class Game {
     if (t.type === 'mg' || t.type === 'aaa') {
       this.projectiles.spawn({ kind: 'ebullet', pos: m, vel: dir.multiplyScalar(s.speed), life: s.range / s.speed + 0.3, damage: s.damage, color: t.type === 'aaa' ? 0xff7040 : 0xffa050 });
       this.fx.muzzle(m.x, m.y, m.z);
-      this.audio.enemyFire(m.x, m.z, false);
+      this.audio.enemyFire(m.x, m.z, 'mg');
     } else if (t.type === 'flak') {
       const dist = m.distanceTo(this.heli.pos);
       this.projectiles.spawn({ kind: 'flak', pos: m, vel: dir.multiplyScalar(s.speed), life: 4, fuse: dist / s.speed + (Math.random() - 0.5) * 0.25, damage: s.damage, color: 0xffc070 });
       this.fx.muzzle(m.x, m.y, m.z, true);
-      this.audio.enemyFire(m.x, m.z, true);
+      this.audio.enemyFire(m.x, m.z, 'flak');
     } else if (t.type === 'tank') {
       this.projectiles.spawn({ kind: 'shell', pos: m, vel: dir.multiplyScalar(s.speed), life: 3, damage: s.damage, color: 0xffd080 });
       this.fx.muzzle(m.x, m.y, m.z, true);
-      this.audio.enemyFire(m.x, m.z, true);
+      this.audio.enemyFire(m.x, m.z, 'tank');
     } else if (t.type === 'sam') {
       const up = new THREE.Vector3(dir.x * 0.4, 1, dir.z * 0.4).normalize();
       this.projectiles.spawn({ kind: 'sam', pos: m, vel: up.multiplyScalar(40), speed: 40, accel: 70, maxSpeed: 135, turn: 1.7, life: 9, fuse: 5, damage: s.damage, targetRef: this.heliTarget, color: 0xffffff });
-      this.audio.enemyFire(m.x, m.z, true);
+      this.audio.enemyFire(m.x, m.z, 'sam');
       this.hud.message('MISSILE LAUNCH!', '#ff5a4a', 2000);
     }
   }
@@ -1475,7 +1496,7 @@ export class Game {
           r.boarded++;
           h.crew++;
           this.addXp(30);
-          this.audio.ui();
+          this.audio.crewBoarded();
           this.hud.message(`CREW BOARDED ${r.boarded}/${r.total}`, '#9dff9a', 1500);
           if (r.done) this.hud.message('All crew aboard — fly them home to the FARP', '#9dff9a');
         }
