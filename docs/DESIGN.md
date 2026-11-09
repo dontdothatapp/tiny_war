@@ -63,9 +63,15 @@ The altitude trade-off is deliberate. Flying low (nap-of-the-earth) beats flak a
 
 Player weapons:
 
-- **Chin cannon:** aimed with the mouse, small high-explosive (HE) blasts.
-- **Rockets:** fixed to the airframe. The CCIP pipper (◇, the continuously computed impact point) shows where they'll land, so you aim them by pointing the helicopter.
-- **Guided missiles:** lock on when the cursor hovers over a target.
+- **Fire control** (`updateAim` and `scanAhead` in `game.ts`): you never aim separately. Every weapon fires straight ahead along the heading, and fire control sets the range. It picks, in order:
+  1. an enemy emplacement inside a narrow cone ahead (about 14 voxels wide at any range, out to 230);
+  2. the first building, wall or vehicle on the line ahead, aiming at mid-height of its near face (foliage is ignored);
+  3. a ground point 55–150 voxels ahead that moves further out with altitude.
+
+  Cannon rounds and rockets both fly to that one point. They don't inherit the aircraft's velocity, so they land on the reticle. The reticle changes colour by target type and turns grey when terrain blocks the line of fire.
+- **Chin cannon:** small high-explosive (HE) blasts. The turret slews toward the fire-control point.
+- **Rockets:** launched from the pods and dive onto the same point.
+- **Guided missiles:** lock on to the emplacement held in the fire-control cone for about 0.6 s.
 - **Flares.**
 
 ## 6. Run structure and progression
@@ -81,13 +87,11 @@ The brief said there are no humans on the map. Downed crews are therefore shown 
 
 ## 7. Controller support
 
-`src/core/gamepad.ts`, the `pollInput` / `menuPad` / `stickAim` / `autoAim` methods in `game.ts`, and focus navigation in `ui/menus.ts`
+`src/core/gamepad.ts`, the `pollInput` / `menuPad` methods in `game.ts`, and focus navigation in `ui/menus.ts`
 
 - The game reads the standard Gamepad API mapping once per simulation step. Sticks use a radial dead zone (16%) and an expo curve on the cyclic for fine control near centre. The triggers have their own small dead zone.
 - **Analog flight.** Stick deflection goes straight into the same `HeliControls` as the keyboard (the two are summed and clamped). With SAS on, half deflection means half the maximum tilt or half the maximum climb rate.
-- **Two layouts.**
-  - *Gunship* (twin-stick): the left stick flies and the right stick places the cannon reticle around the aircraft. Push further to aim further. When you let go, the reticle drifts back ahead of the nose. Light magnetism pulls it onto emplacements, which also handles missile lock.
-  - *Pilot*: closer to real helicopter hands, with collective and pedals on the left stick and cyclic on the right. A virtual gunner aims the cannon at the most threatening emplacement within about 70° of the nose.
+- **One layout.** The left stick is the cyclic (fly). The right stick's X axis is the pedals (turn). The bumpers are the collective (climb/descend) and the triggers fire. Aiming is handled by fire control, so the right stick only turns.
 - **Device switching.** Whichever device you used last decides the prompts, the HUD help text, mouse-cursor visibility and whether the controller vibrates.
 - **Menus.** Spatial focus navigation moves within the same row or column first, then to the nearest control in that direction. Holding a direction repeats after a short delay. Focus stays on the same control when a screen re-renders, for example after a toggle or a purchase.
 - **Rumble.** Cannon fire, rocket and missile launches, taking damage, nearby explosions, winching and losing the aircraft all vibrate the controller. It uses `vibrationActuator` where available and `hapticActuators` as a fallback.

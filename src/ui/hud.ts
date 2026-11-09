@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 // DOM HUD in a green-phosphor terminal style + a 2D overlay canvas for
-// reticles, CCIP pipper, lock boxes and off-screen markers.
+// the fire-control reticle, lock boxes and off-screen markers.
 
 export interface HudObjective {
   text: string;
@@ -47,7 +47,7 @@ export interface RadarBlip {
   shape?: 'dot' | 'square' | 'diamond' | 'ring';
 }
 
-export const KEYBOARD_HELP = `W/S cyclic fwd/back · A/D cyclic left/right · Q/E pedals · SPACE/SHIFT collective<br>LMB cannon · RMB rockets · F missile (hover target to lock) · X flares · H assists · M map · P pixels · ESC pause`;
+export const KEYBOARD_HELP = `W/S cyclic fwd/back · A/D cyclic left/right · Q/E turn · SPACE/SHIFT climb/descend<br>LMB cannon · RMB rockets (both fire straight ahead) · F missile · X flares · H assists · M map · P pixels · ESC pause`;
 
 const el = (tag: string, cls: string, parent: HTMLElement, html = '') => {
   const e = document.createElement(tag);

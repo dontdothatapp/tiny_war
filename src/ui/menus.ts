@@ -22,9 +22,8 @@ export interface DebriefInfo {
 export interface PadStatus {
   connected: boolean;
   name: string;
-  layout: 'gunship' | 'pilot';
   rumble: boolean;
-  /** one-line mapping summary for the current layout */
+  /** mapping summary with this controller's button labels */
   help: string;
 }
 
@@ -145,7 +144,7 @@ export class Menus {
   title(
     save: SaveData,
     pad: PadStatus,
-    h: { newRun: () => void; hangar: () => void; toggleAssist: () => void; pixel: () => void; padLayout: () => void; rumble: () => void },
+    h: { newRun: () => void; hangar: () => void; toggleAssist: () => void; pixel: () => void; rumble: () => void },
   ) {
     this.show(
       `<div class="logo">TINY<span>WAR</span></div>
@@ -157,13 +156,12 @@ export class Menus {
        <div class="settings">
          <button data-a="assist">ASSISTS: ${save.settings.assists ? 'ON (SAS)' : 'OFF (FULL SIM)'}</button>
          <button data-a="pixel">PIXEL SIZE: ${['HD', 'x2', 'x3'][save.settings.pixelScale - 1]}</button>
-         <button data-a="layout">PAD LAYOUT: ${pad.layout === 'pilot' ? 'PILOT' : 'GUNSHIP'}</button>
          <button data-a="rumble">VIBRATION: ${pad.rumble ? 'ON' : 'OFF'}</button>
        </div>
        <div class="controls">
          <div><b>FLY</b> W/S cyclic fwd/back · A/D cyclic left/right · Q/E pedals (yaw) · SPACE/SHIFT collective up/down</div>
-         <div><b>FIGHT</b> mouse aims chin gun · LMB cannon · RMB rockets (fly the ◇ pipper onto target) · F missile · X flares</div>
-         <div><b>CONTROLLER</b> ${pad.connected ? `<span class="pad-name">${pad.name}</span> · ${pad.help}` : 'plug in any gamepad and press a button · Gunship = twin-stick (fly + aim), Pilot = collective/pedals on the left stick, cyclic on the right'}</div>
+         <div><b>FIGHT</b> weapons fire straight ahead and auto-range onto the first target in front of the nose · LMB cannon · RMB rockets · F missile · X flares</div>
+         <div><b>CONTROLLER</b> ${pad.connected ? `<span class="pad-name">${pad.name}</span> · ${pad.help}` : 'plug in any gamepad and press a button · left stick flies, right stick turns, triggers fire'}</div>
          <div><b>LOGISTICS</b> hover low over crates to winch · land at downed crews to board them · land on the FARP pad to refuel, rearm, bank credits</div>
          <div class="dim">Best sector reached: ${save.bestSector} · Runs flown: ${save.runs} · Crew rescued: ${save.rescuedTotal}</div>
        </div>`,
@@ -173,7 +171,6 @@ export class Menus {
     this.on('[data-a=hangar]', h.hangar);
     this.on('[data-a=assist]', h.toggleAssist);
     this.on('[data-a=pixel]', h.pixel);
-    this.on('[data-a=layout]', h.padLayout);
     this.on('[data-a=rumble]', h.rumble);
   }
 
@@ -234,17 +231,16 @@ export class Menus {
     if (h.back) this.on('[data-a=back]', h.back);
   }
 
-  pause(pad: PadStatus, h: { resume: () => void; abort: () => void; padLayout: () => void }) {
+  pause(pad: PadStatus, h: { resume: () => void; abort: () => void }) {
     this.show(
       `<div class="h">PAUSED</div>
-       <div class="btns"><button class="b-primary" data-a="r">RESUME</button><button data-a="layout">PAD LAYOUT: ${pad.layout === 'pilot' ? 'PILOT' : 'GUNSHIP'}</button><button data-a="q">ABANDON RUN</button></div>
+       <div class="btns"><button class="b-primary" data-a="r">RESUME</button><button data-a="q">ABANDON RUN</button></div>
        ${pad.connected ? `<div class="dim pad-help">${pad.help}</div>` : ''}`,
       'pause',
       h.resume,
     );
     this.on('[data-a=r]', h.resume);
     this.on('[data-a=q]', h.abort);
-    this.on('[data-a=layout]', h.padLayout);
   }
 
   loading(text: string) {

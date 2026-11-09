@@ -20,29 +20,36 @@ You need a desktop browser with WebGL2. The build is about 680 KB of JS (about 1
 |---|---|
 | **W / S** | cyclic forward / back (nose down accelerates) |
 | **A / D** | cyclic left / right (bank; the tail weathervanes you into a turn) |
-| **Q / E** | pedals (yaw), mostly for hovering |
-| **Space / Shift** | collective up / down |
-| **Mouse** | aim the chin cannon |
+| **Q / E** | turn (pedals / yaw) |
+| **Space / Shift** | collective up / down (climb / descend) |
 | **LMB** | 30 mm cannon |
-| **RMB** | rockets. They fire along the airframe, so fly the ◇ pipper onto the target |
-| **F** | guided missile (hover the cursor over a target to lock; unlocked by upgrade) |
+| **RMB** | rockets |
+| **F** | guided missile (locks on to an emplacement you keep ahead of the nose; unlocked by upgrade) |
 | **X** | flares (unlocked by upgrade) |
 | **H** | toggle flight assists (SAS on, or full manual) |
 | **M** map · **P** pixel size · **Wheel** zoom · **Esc** pause · **`** debug stats |
 
+**Aiming.** You don't aim separately: all weapons fire straight ahead along the helicopter's heading, and fire control works out the range. It aims at the first of these it finds:
+
+1. an enemy emplacement in a narrow cone ahead of the nose;
+2. the first building, wall or vehicle on the line ahead;
+3. a ground point ahead, further out the higher you fly.
+
+Cannon rounds and rockets both go to that reticle. The reticle is yellow on a structure, orange on an emplacement and green on open ground, and it turns grey when terrain blocks the line of fire.
+
 ### Controller
 
-Any controller with the browser's standard gamepad mapping works (Xbox, PlayStation, Switch Pro, most generic pads). Plug it in and press a button. The game switches to controller prompts and button labels, and switches back as soon as you touch the keyboard or mouse. Menus work with the D-pad or left stick, **A** to confirm and **B** to go back. You can switch layouts and turn vibration on or off from the title screen or the pause menu.
+Any controller with the browser's standard gamepad mapping works (Xbox, PlayStation, Switch Pro, most generic pads). Plug it in and press a button. The game switches to controller prompts and button labels, and switches back as soon as you touch the keyboard or mouse. Menus work with the D-pad or left stick, **A** to confirm and **B** to go back. Vibration can be turned on or off on the title screen.
 
-| | **Gunship** (default, twin-stick) | **Pilot** (sim-style) |
-|---|---|---|
-| Left stick | cyclic (fly) | collective ▴▾ + pedals ◂▸ |
-| Right stick | aim the cannon (reticle around the aircraft, slight aim assist) | cyclic |
-| RT / LT | cannon / rockets | cannon (an auto-gunner tracks the nearest threat ahead) / rockets |
-| RB / LB | climb / descend | missile / flares |
-| D-pad | ◂▸ pedals, ▴▾ zoom | ▴▾ zoom |
-| A / B | missile / flares | — |
-| Y · View · Menu | map · toggle SAS · pause | map · toggle SAS · pause |
+| | |
+|---|---|
+| **Left stick** | fly (cyclic: forward/back, bank left/right) |
+| **Right stick ◂▸** | turn (pedals / yaw) |
+| **RB / LB** | climb / descend |
+| **RT / LT** | cannon / rockets (straight ahead, same aiming as above) |
+| **A / B** | missile / flares |
+| **D-pad ▴▾** | zoom |
+| **Y · View · Menu** | map · toggle SAS · pause |
 
 PlayStation controllers show ✕ ○ □ △ and L1/R1/L2/R2 labels instead. Some browsers won't start audio until you click or press a key once, because a controller button press may not count as a user gesture. The game shows a hint when this happens.
 

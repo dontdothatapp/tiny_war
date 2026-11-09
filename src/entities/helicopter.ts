@@ -81,6 +81,9 @@ export class Helicopter {
   }
 
   reset(x: number, y: number, z: number, yaw: number) {
+    // the model is hidden when the aircraft is destroyed
+    this.visual.root.visible = true;
+    (this.visual.material.userData.flash as { value: number }).value = 0;
     this.pos.set(x, y, z);
     this.vel.set(0, 0, 0);
     this.yaw = yaw;

@@ -23,7 +23,6 @@ export const BTN = {
 export type Btn = (typeof BTN)[keyof typeof BTN];
 
 export type PadFamily = 'xbox' | 'playstation' | 'generic';
-export type PadLayout = 'gunship' | 'pilot';
 
 const GLYPHS: Record<PadFamily, Record<number, string>> = {
   xbox: { 0: 'A', 1: 'B', 2: 'X', 3: 'Y', 4: 'LB', 5: 'RB', 6: 'LT', 7: 'RT', 8: 'View', 9: 'Menu', 10: 'LS', 11: 'RS' },
@@ -169,9 +168,7 @@ export function expo(v: number, k = 1.5): number {
   return Math.sign(v) * Math.pow(Math.abs(v), k);
 }
 
-export function padHelp(p: GamepadInput, layout: PadLayout): string {
+export function padHelp(p: GamepadInput): string {
   const g = (b: Btn) => `<b>${p.glyph(b)}</b>`;
-  if (layout === 'pilot')
-    return `PILOT LAYOUT · ${g(BTN.LS)} collective ▴▾ / pedals ◂▸ · ${g(BTN.RS)} cyclic · ${g(BTN.RT)} cannon (gunner auto-aims) · ${g(BTN.LT)} rockets<br>${g(BTN.RB)} missile · ${g(BTN.LB)} flares · D-pad ▴▾ zoom · ${g(BTN.Y)} map · ${g(BTN.VIEW)} SAS · ${g(BTN.MENU)} pause`;
-  return `GUNSHIP LAYOUT · ${g(BTN.LS)} cyclic · ${g(BTN.RS)} aim cannon · ${g(BTN.RT)} cannon · ${g(BTN.LT)} rockets · ${g(BTN.RB)}/${g(BTN.LB)} climb/descend<br>D-pad ◂▸ pedals, ▴▾ zoom · ${g(BTN.A)} missile · ${g(BTN.B)} flares · ${g(BTN.Y)} map · ${g(BTN.VIEW)} SAS · ${g(BTN.MENU)} pause`;
+  return `${g(BTN.LS)} fly (cyclic) · ${g(BTN.RS)} ◂▸ turn · ${g(BTN.RB)}/${g(BTN.LB)} climb/descend · ${g(BTN.RT)} cannon · ${g(BTN.LT)} rockets<br>${g(BTN.A)} missile · ${g(BTN.B)} flares · D-pad ▴▾ zoom · ${g(BTN.Y)} map · ${g(BTN.VIEW)} SAS · ${g(BTN.MENU)} pause`;
 }

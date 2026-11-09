@@ -15,7 +15,7 @@ import { Menus, PadStatus } from '../ui/menus';
 import { BodySystem } from '../voxel/bodies';
 import { ChunkRenderer } from '../voxel/chunkRenderer';
 import { Destruction } from '../voxel/destruction';
-import { M } from '../voxel/materials';
+import { M, MAT_SOFT, MAT_TERRAIN } from '../voxel/materials';
 import { VoxelWorld } from '../voxel/world';
 import { MapGenerator, WORLD_HEIGHT } from '../world/generator';
 import type { BaseDef, MapData } from '../world/mapTypes';
@@ -46,6 +46,8 @@ interface Ammo {
 }
 
 const SUN_DIR = new THREE.Vector3(-0.5, 0.85, 0.35).normalize();
+/** Fire-control range (voxels). */
+const AIM_RANGE = 230;
 
 export class Game {
   readonly rig: SceneRig;
@@ -89,8 +91,11 @@ export class Game {
   private lockT = 0;
   private aim = new THREE.Vector3();
   private aimValid = false;
-  private ccip = new THREE.Vector3();
-  private ccipValid = false;
+  private aimKind: 'turret' | 'structure' | 'ground' = 'ground';
+  private aimBlocked = false;
+  private aimLosT = 0;
+  /** the current map has been flown in (and possibly blown up) */
+  private mapPlayed = false;
   private camFocus = new THREE.Vector3();
   private camVel = new THREE.Vector3();
   private zoom = 210;
@@ -110,13 +115,10 @@ export class Game {
   private hudT = 0;
   private debug = false;
   private debugEl: HTMLElement;
-  private raycaster = new THREE.Raycaster();
   /** true while the controller is the most recently used device */
   private padMode = false;
   /** a menu consumed this frame's controller press */
   private padEat = false;
-  private padAimOff = new THREE.Vector3(0, 0, -60);
-  private autoAimPt = new THREE.Vector3();
   private navDir = '';
   private navT = 0;
 
@@ -160,15 +162,7 @@ export class Game {
   }
 
   private padStatus(): PadStatus {
-    const layout = this.save.settings.padLayout;
-    return { connected: this.pad.connected, name: this.padName(), layout, rumble: this.save.settings.rumble, help: padHelp(this.pad, layout) };
-  }
-
-  private togglePadLayout() {
-    this.save.settings.padLayout = this.save.settings.padLayout === 'gunship' ? 'pilot' : 'gunship';
-    writeSave(this.save);
-    this.audio.ui();
-    this.hud.setHelp(this.padMode ? padHelp(this.pad, this.save.settings.padLayout) : KEYBOARD_HELP);
+    return { connected: this.pad.connected, name: this.padName(), rumble: this.save.settings.rumble, help: padHelp(this.pad) };
   }
 
   /** Poll devices once per step and work out which one the player is using. */
@@ -179,7 +173,7 @@ export class Game {
     if (padMode !== this.padMode) {
       this.padMode = padMode;
       document.body.classList.toggle('using-pad', padMode);
-      this.hud.setHelp(padMode ? padHelp(this.pad, this.save.settings.padLayout) : KEYBOARD_HELP);
+      this.hud.setHelp(padMode ? padHelp(this.pad) : KEYBOARD_HELP);
       if (padMode && this.state === 'playing') {
         this.hud.showHelp(true);
         setTimeout(() => this.hud.showHelp(false), 7000);
@@ -246,10 +240,6 @@ export class Game {
     this.hud.setVisible(false);
     this.menus.title(this.save, this.padStatus(), {
       newRun: () => this.startRun(),
-      padLayout: () => {
-        this.togglePadLayout();
-        this.showTitle();
-      },
       rumble: () => {
         this.save.settings.rumble = !this.save.settings.rumble;
         this.pad.rumbleEnabled = this.save.settings.rumble;
@@ -279,10 +269,13 @@ export class Game {
     this.audio.init();
     this.save.runs++;
     writeSave(this.save);
-    const seed = this.map && this.map.sector === 1 ? this.map.seed : Math.floor(Math.random() * 1e6);
+    // Reuse the untouched attract-mode map if it's a sector-1 map; anything that has been
+    // flown in (craters, wrecks, destroyed objectives) gets a brand-new theatre.
+    const reuse = this.map && this.map.sector === 1 && !this.mapPlayed;
+    const seed = reuse ? this.map.seed : Math.floor(Math.random() * 1e6);
     this.run = { seed, sector: 1, pending: 0, earned: 0, kills: 0, structures: 0, rescued: 0, sectorsCleared: 0, startTime: performance.now() };
-    if (!this.map || this.map.sector !== 1 || this.map.seed !== seed || this.world.generatedCount > 4000) this.loadSector(seed, 1);
-    else this.resetSectorEntities();
+    if (reuse) this.resetSectorEntities();
+    else this.loadSector(seed, 1);
     this.showBriefing();
   }
 
@@ -308,6 +301,7 @@ export class Game {
   }
 
   private launch() {
+    this.mapPlayed = true;
     this.menus.hide();
     this.hud.setVisible(true);
     this.hud.showHelp(true);
@@ -315,7 +309,7 @@ export class Game {
     this.state = 'playing';
     this.audio.init();
     this.hud.message('ENGINES START · ROTOR SPOOL-UP', '#9dff9a');
-    const liftHint = !this.padMode ? 'Hold SPACE to lift off' : this.save.settings.padLayout === 'gunship' ? `Hold ${this.pad.glyph(BTN.RB)} to lift off` : 'Push the left stick up to lift off';
+    const liftHint = this.padMode ? `Hold ${this.pad.glyph(BTN.RB)} to lift off` : 'Hold SPACE to lift off';
     this.hud.message(liftHint, '#9dff9a', 5000);
     if (this.padMode) setTimeout(() => this.audio.blocked && this.hud.message('Sound starts after one click or key press (browser rule)', '#ffb84a', 5000), 600);
   }
@@ -440,6 +434,7 @@ export class Game {
 
   loadSector(seed: number, sector: number) {
     this.disposeSector();
+    this.mapPlayed = false;
     const t0 = performance.now();
     this.gen = new MapGenerator(seed, sector);
     this.map = this.gen.generate();
@@ -594,10 +589,6 @@ export class Game {
         this.run!.pending = 0;
         this.showDebrief();
       },
-      padLayout: () => {
-        this.togglePadLayout();
-        this.pause();
-      },
     });
   }
 
@@ -622,7 +613,6 @@ export class Game {
     const inp = this.input;
     const h = this.heli;
     const pad = this.pad;
-    const layout = this.save.settings.padLayout;
     if (this.state === 'playing') {
       if (inp.hit('Escape') || this.padHit(BTN.MENU)) {
         this.pause();
@@ -647,17 +637,10 @@ export class Game {
       py = 0,
       pc = 0;
     if (pad.connected) {
-      if (layout === 'gunship') {
-        pp = expo(-pad.L.y);
-        pr = expo(pad.L.x);
-        py = pad.dpadX();
-        pc = (pad.pressed(BTN.RB) ? 1 : 0) - (pad.pressed(BTN.LB) ? 1 : 0);
-      } else {
-        pc = -pad.L.y;
-        py = expo(pad.L.x, 1.3);
-        pp = expo(-pad.R.y);
-        pr = expo(pad.R.x);
-      }
+      pp = expo(-pad.L.y);
+      pr = expo(pad.L.x);
+      py = expo(pad.R.x, 1.3);
+      pc = (pad.pressed(BTN.RB) ? 1 : 0) - (pad.pressed(BTN.LB) ? 1 : 0);
     }
     const c: HeliControls = alive
       ? {
@@ -712,118 +695,93 @@ export class Game {
 
   // ======================================================================== aiming + weapons
 
-  private updateAim(dt: number) {
-    if (this.padMode && this.save.settings.padLayout === 'gunship') this.stickAim(dt);
-    else if (this.padMode) this.autoAim(dt);
-    else this.mouseAim();
-    // turret under cursor for missile lock
-    let best: Turret | null = null;
-    let bestD = 22;
-    for (const t of this.turrets) {
-      if (!t.alive) continue;
-      const dd = Math.hypot(t.center.x - this.aim.x, t.center.z - this.aim.z);
-      if (dd < bestD && t.center.distanceTo(this.heli.pos) < 520) {
-        bestD = dd;
-        best = t;
-      }
-    }
-    if (best && best === this.lockTurret) this.lockT += dt;
-    else {
-      this.lockTurret = best;
-      this.lockT = 0;
-    }
-    // CCIP for rockets: straight-line impact along boresight
-    const bs = this.heli.boresight(new THREE.Vector3());
-    const start = this.heli.pos.clone().add(new THREE.Vector3(0, 2, 0));
-    const rh = this.world.raycast(start.x, start.y, start.z, bs.x, bs.y, bs.z, 420);
-    this.ccipValid = !!rh;
-    if (rh) this.ccip.copy(start).addScaledVector(bs, rh.dist);
-  }
-
-  private mouseAim() {
-    const cam = this.rig.camera;
-    this.raycaster.setFromCamera(new THREE.Vector2(this.input.ndcX, this.input.ndcY), cam);
-    const o = this.raycaster.ray.origin,
-      d = this.raycaster.ray.direction;
-    const hit = this.world.raycast(o.x, o.y, o.z, d.x, d.y, d.z, 900);
-    if (hit) {
-      this.aim.set(o.x + d.x * hit.dist, o.y + d.y * hit.dist, o.z + d.z * hit.dist);
-      this.aimValid = true;
-    } else {
-      // plane at the heli's ground level
-      const gy = this.heli.pos.y - this.heli.agl;
-      const t = (gy - o.y) / (d.y || -1);
-      this.aim.set(o.x + d.x * t, gy, o.z + d.z * t);
-      this.aimValid = t > 0;
-    }
-  }
-
-  /** Surface height under a map point (roofs count), searched from above the aircraft. */
-  private surfaceY(x: number, z: number): number {
-    const y = this.world.topY(x, z, Math.floor(this.heli.pos.y + 30));
-    return y >= 0 ? y + 1 : this.heli.pos.y - this.heli.agl;
-  }
-
   /**
-   * Gunship layout: the right stick places the reticle around the aircraft
-   * (screen-aligned, push further = aim further). Released, it drifts back
-   * ahead of the nose. Light magnetism pulls it onto nearby emplacements.
+   * Fire control. Every weapon shoots straight ahead along the heading and the
+   * system auto-ranges: first an enemy emplacement inside a narrow cone ahead,
+   * then the first building or vehicle on the line ahead, otherwise a ground
+   * point that moves further out the higher you fly. Cannon, rockets and the
+   * missile lock all use this one aim point.
    */
-  private stickAim(dt: number) {
-    const h = this.heli;
-    const R = this.pad.R;
-    const want = new THREE.Vector3();
-    if (R.mag > 0) want.set(R.x, 0, R.y).normalize().multiplyScalar(26 + 150 * R.mag);
-    else h.forward(want).multiplyScalar(60);
-    this.padAimOff.lerp(want, 1 - Math.exp(-(R.mag > 0 ? 12 : 4) * dt));
-    const x = h.pos.x + this.padAimOff.x,
-      z = h.pos.z + this.padAimOff.z;
-    this.aim.set(x, this.surfaceY(x, z), z);
-    let best: Turret | null = null;
-    let bd = 18;
-    for (const t of this.turrets) {
-      if (!t.alive) continue;
-      const d = Math.hypot(t.center.x - x, t.center.z - z);
-      if (d < bd && t.center.distanceTo(h.pos) < 340) {
-        bd = d;
-        best = t;
-      }
-    }
-    if (best) this.aim.lerp(best.center, 0.75);
-    this.aimValid = true;
-  }
-
-  /** Pilot layout: a virtual gunner tracks the most threatening emplacement ahead of the nose. */
-  private autoAim(dt: number) {
+  private updateAim(dt: number) {
     const h = this.heli;
     const fwd = h.forward(new THREE.Vector3());
-    let best: Turret | null = null;
+    let target: Turret | null = null;
     let bestScore = Infinity;
     for (const t of this.turrets) {
       if (!t.alive) continue;
       const dx = t.center.x - h.pos.x,
         dz = t.center.z - h.pos.z;
       const dist = Math.hypot(dx, dz);
-      if (dist > 260 || dist < 4) continue;
+      if (dist < 10 || dist > AIM_RANGE) continue;
       const ang = Math.acos(clamp((dx * fwd.x + dz * fwd.z) / dist, -1, 1));
-      if (ang > 1.25) continue;
-      const score = ang * 120 + dist * 0.4 - (t.hasLOS ? 40 : 0);
+      // the cone stays a few metres wide at any range
+      if (ang > Math.max(0.12, Math.atan2(14, dist))) continue;
+      const score = ang * 400 + dist * 0.2;
       if (score < bestScore) {
         bestScore = score;
-        best = t;
+        target = t;
       }
     }
     const want = new THREE.Vector3();
-    if (best) want.copy(best.center);
-    else {
-      const x = h.pos.x + fwd.x * 60,
-        z = h.pos.z + fwd.z * 60;
-      want.set(x, this.surfaceY(x, z), z);
+    if (target) {
+      want.copy(target.center);
+      this.aimKind = 'turret';
+    } else {
+      const hit = this.scanAhead(fwd);
+      if (hit) {
+        want.copy(hit);
+        this.aimKind = 'structure';
+      } else {
+        const d = clamp(55 + h.agl * 1.2, 55, 150);
+        const x = h.pos.x + fwd.x * d,
+          z = h.pos.z + fwd.z * d;
+        want.set(x, this.surfaceY(x, z), z);
+        this.aimKind = 'ground';
+      }
     }
-    if (this.autoAimPt.distanceToSquared(h.pos) > 400 * 400) this.autoAimPt.copy(want);
-    this.autoAimPt.lerp(want, 1 - Math.exp(-7 * dt));
-    this.aim.copy(this.autoAimPt);
+    // glide between nearby points, snap when the target changes a lot
+    if (!this.aimValid || this.aim.distanceTo(want) > 60) this.aim.copy(want);
+    else this.aim.lerp(want, 1 - Math.exp(-14 * dt));
     this.aimValid = true;
+    // is there a clear line from the aircraft to the aim point? (dims the reticle when not)
+    this.aimLosT -= dt;
+    if (this.aimLosT <= 0) {
+      this.aimLosT = 0.1;
+      this.aimBlocked = !this.world.lineClear(h.pos.x, h.pos.y + 1.5, h.pos.z, this.aim.x, this.aim.y, this.aim.z, 6, 3);
+    }
+    // missile lock = an emplacement held in the fire-control cone
+    if (target && target === this.lockTurret) this.lockT += dt;
+    else {
+      this.lockTurret = target;
+      this.lockT = 0;
+    }
+  }
+
+  /** First solid, non-foliage object (building, vehicle, wall) on the line ahead of the nose. */
+  private scanAhead(fwd: THREE.Vector3): THREE.Vector3 | null {
+    const h = this.heli;
+    const S = this.map.size;
+    const from = Math.floor(h.pos.y + 10);
+    for (let d = 14; d <= AIM_RANGE; d += 2) {
+      const x = Math.floor(h.pos.x + fwd.x * d),
+        z = Math.floor(h.pos.z + fwd.z * d);
+      if (x < 0 || z < 0 || x >= S || z >= S) return null;
+      const y = this.world.topY(x, z, from);
+      if (y < 0) continue;
+      const m = this.world.get(x, y, z);
+      if (MAT_TERRAIN[m] || MAT_SOFT[m]) continue;
+      const base = this.map.heights[x + z * S];
+      if (y + 1 - base < 3) continue;
+      // aim at mid-height of the face we're looking at
+      return new THREE.Vector3(x + 0.5, (base + y + 1) / 2, z + 0.5);
+    }
+    return null;
+  }
+
+  /** Surface height under a map point (roofs count), searched from above the aircraft. */
+  private surfaceY(x: number, z: number): number {
+    const y = this.world.topY(x, z, Math.floor(this.heli.pos.y + 30));
+    return y >= 0 ? y + 1 : this.heli.pos.y - this.heli.agl;
   }
 
   private updateWeapons(dt: number) {
@@ -835,11 +793,10 @@ export class Game {
     this.flareT -= dt;
     const aimDir = h.aimGun(this.aim, new THREE.Vector3());
     const pad = this.pad;
-    const gunship = this.save.settings.padLayout === 'gunship';
     const cannon = inp.lmb || pad.pressed(BTN.RT);
     const rockets = inp.rmb || pad.pressed(BTN.LT);
-    const missileBtn: Btn = gunship ? BTN.A : BTN.RB;
-    const flareBtn: Btn = gunship ? BTN.B : BTN.LB;
+    const missileBtn: Btn = BTN.A;
+    const flareBtn: Btn = BTN.B;
     // cannon
     if (cannon && this.gunT <= 0 && this.ammo.gun > 0 && h.rpm > 0.8) {
       this.gunT = 1 / st.gunRof;
@@ -851,7 +808,8 @@ export class Game {
         kind: 'bullet',
         player: true,
         pos: m,
-        vel: dir.multiplyScalar(300).add(h.vel),
+        // no inherited aircraft velocity, so rounds land exactly on the reticle
+        vel: dir.multiplyScalar(300),
         life: 2.2,
         radius: st.gunRadius,
         power: st.gunPower,
@@ -872,16 +830,17 @@ export class Game {
       this.ammo.rockets--;
       this.podLeft = !this.podLeft;
       const p = h.podWorld(this.podLeft, new THREE.Vector3());
-      const dir = h.boresight(new THREE.Vector3());
-      dir.x += (Math.random() - 0.5) * 0.015;
-      dir.y += (Math.random() - 0.5) * 0.015;
-      dir.z += (Math.random() - 0.5) * 0.015;
+      // rockets dive onto the same aim point as the cannon
+      const dir = this.aim.clone().sub(p).normalize();
+      dir.x += (Math.random() - 0.5) * 0.012;
+      dir.y += (Math.random() - 0.5) * 0.012;
+      dir.z += (Math.random() - 0.5) * 0.012;
       dir.normalize();
       this.projectiles.spawn({
         kind: 'rocket',
         player: true,
         pos: p,
-        vel: dir.clone().multiplyScalar(110).add(h.vel),
+        vel: dir.clone().multiplyScalar(110),
         speed: 110,
         accel: 300,
         maxSpeed: 220,
@@ -904,7 +863,7 @@ export class Game {
       else if (this.ammo.missiles <= 0) this.audio.deny();
       else if (!this.lockTurret || this.lockT < 0.6) {
         this.audio.deny();
-        this.hud.message(this.padMode ? 'NO LOCK — keep the reticle on a target' : 'NO LOCK — hold the cursor over a target', '#ffb84a', 1500);
+        this.hud.message('NO LOCK — point the nose at an emplacement', '#ffb84a', 1500);
       } else {
         this.ammo.missiles--;
         const t = this.lockTurret;
@@ -1535,18 +1494,23 @@ export class Game {
     if (this.state !== 'playing' || h.dead) return;
     const cam = this.rig.camera;
     const sp = { x: 0, y: 0, behind: false };
-    // gun aim
+    // fire-control reticle (cannon + rockets), with a sight line from the aircraft
     if (this.aimValid) {
       hud.project(this.aim, cam, sp);
-      hud.crosshair(sp.x, sp.y, this.ammo.gun > 0 ? '#9dff9a' : '#ff6a5a');
-    }
-    // CCIP
-    if (this.ccipValid && this.ammo.rockets > 0) {
-      hud.project(this.ccip, cam, sp);
       const hp = { x: 0, y: 0, behind: false };
       hud.project(h.pos, cam, hp);
-      hud.line(hp.x, hp.y, sp.x, sp.y, 'rgba(255,228,106,0.35)', true);
-      hud.pipper(sp.x, sp.y);
+      const col =
+        this.ammo.gun <= 0 && this.ammo.rockets <= 0
+          ? '#ff6a5a'
+          : this.aimBlocked
+            ? 'rgba(200,200,190,0.55)'
+            : this.aimKind === 'turret'
+              ? '#ff8a5a'
+              : this.aimKind === 'structure'
+                ? '#ffe46a'
+                : '#9dff9a';
+      hud.line(hp.x, hp.y, sp.x, sp.y, 'rgba(157,255,154,0.3)', true);
+      hud.crosshair(sp.x, sp.y, col, this.aimKind === 'ground' ? 9 : 12);
     }
     // missile lock
     if (this.lockTurret && this.stats.missiles > 0) {
