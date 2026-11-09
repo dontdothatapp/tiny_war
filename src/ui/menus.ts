@@ -1,4 +1,4 @@
-import { HeliStats, SaveData, UPGRADES, UpgradeDef, level, levelCap, upgradeCost } from '../game/progression';
+import { HeliStats, PerkDef, Perks, SaveData, UPGRADES, UpgradeDef, level, levelCap, shopItems, upgradeCost } from '../game/progression';
 
 // Title, briefing, debrief, hangar and pause screens as DOM overlays.
 
@@ -162,7 +162,8 @@ export class Menus {
          <div><b>FLY</b> W/S cyclic fwd/back · A/D cyclic left/right · Q/E pedals (yaw) · SPACE/SHIFT collective up/down</div>
          <div><b>FIGHT</b> weapons fire straight ahead and auto-range onto the first target in front of the nose · LMB cannon · RMB rockets · F missile · X flares</div>
          <div><b>CONTROLLER</b> ${pad.connected ? `<span class="pad-name">${pad.name}</span> · ${pad.help}` : 'plug in any gamepad and press a button · left stick flies, right stick turns, triggers fire'}</div>
-         <div><b>LOGISTICS</b> hover low over crates to winch · land at downed crews to board them · land on the FARP pad to refuel, rearm, bank credits</div>
+         <div><b>LOGISTICS</b> hover low over crates or land next to them · land at downed crews to board them · land on the FARP pad to refuel, rearm, bank credits</div>
+         <div><b>PROGRESS</b> earn XP in flight: every level offers 1 of 3 upgrades for this run · spend credits in the hangar shop for permanent upgrades</div>
          <div class="dim">Best sector reached: ${save.bestSector} · Runs flown: ${save.runs} · Crew rescued: ${save.rescuedTotal}</div>
        </div>`,
       'title',
@@ -201,27 +202,27 @@ export class Menus {
     this.on('[data-a=go]', onContinue);
   }
 
+  /** Permanent upgrades. Only items unlocked by the best sector reached are shown. */
   hangar(save: SaveData, stats: HeliStats, nextLabel: string, h: { buy: (d: UpgradeDef) => void; launch: () => void; back?: () => void }) {
-    const groups = ['Airframe', 'Weapons', 'Systems'] as const;
-    const rows = (g: string) =>
-      UPGRADES.filter((u) => u.group === g)
-        .map((u) => {
-          const lv = level(save, u.id);
-          const cap = levelCap(u, save.bestSector);
-          const cost = upgradeCost(u, lv);
-          const pips = Array.from({ length: u.max }, (_, i) => `<i class="${i < lv ? 'on' : i < cap ? '' : 'lock'}"></i>`).join('');
-          let btn: string;
-          if (lv >= u.max) btn = `<button disabled>MAX</button>`;
-          else if (lv >= cap) btn = `<button disabled>SECTOR ${u.unlock + lv}</button>`;
-          else btn = `<button data-u="${u.id}" ${save.credits < cost ? 'class="poor"' : ''}>${cost} CR</button>`;
-          return `<div class="up"><div><b>${u.name}</b><div class="dim">${u.desc}</div></div><div class="pips">${pips}</div>${btn}</div>`;
-        })
-        .join('');
+    const { open, next, nextSector } = shopItems(save);
+    const card = (u: UpgradeDef) => {
+      const lv = level(save, u.id);
+      const cap = levelCap(u, save.bestSector);
+      const cost = upgradeCost(u, lv);
+      const pips = Array.from({ length: u.max }, (_, i) => `<i class="${i < lv ? 'on' : i < cap ? '' : 'lock'}"></i>`).join('');
+      let btn: string;
+      if (lv >= u.max) btn = `<button disabled>MAX</button>`;
+      else if (lv >= cap) btn = `<button disabled>NEXT LEVEL AT SECTOR ${u.unlock + lv}</button>`;
+      else btn = `<button data-u="${u.id}" ${save.credits < cost ? 'class="poor"' : ''}>BUY · ${cost} CR</button>`;
+      return `<div class="up"><div><b>${u.name}</b><div class="dim">${u.desc}</div></div><div class="pips">${pips}</div>${btn}</div>`;
+    };
+    const teaser = next.length ? `<div class="teaser">🔒 Reach sector ${nextSector} to unlock: ${next.map((u) => u.name).join(' · ')}</div>` : '';
     this.show(
-      `<div class="h">HANGAR <span class="cr">${save.credits} CR</span></div>
-       <div class="dim">Upgrades are permanent. Reaching deeper sectors raises upgrade caps and unlocks new systems.</div>
-       <div class="hangar-cols">${groups.map((g) => `<div><div class="t">${g.toUpperCase()}</div>${rows(g)}</div>`).join('')}</div>
-       <div class="stats">FUEL ${Math.round(stats.maxFuel)} · ARMOR ${stats.maxHp} · T/W ${stats.twr.toFixed(2)} · TILT ${Math.round((stats.maxTilt * 180) / Math.PI)}° · GUN ${stats.gunAmmo} · RKT ${stats.rockets} · MSL ${stats.missiles} · FLR ${stats.flares} · SEATS ${stats.cabin}</div>
+      `<div class="h">HANGAR SHOP <span class="cr">${save.credits} CR</span></div>
+       <div class="dim">Permanent upgrades, kept between runs. New items arrive as you reach deeper sectors.</div>
+       <div class="shop-grid">${open.map(card).join('')}</div>
+       ${teaser}
+       <div class="stats">FUEL ${Math.round(stats.maxFuel)} · ARMOR ${stats.maxHp} · T/W ${stats.twr.toFixed(2)} · GUN ${stats.gunAmmo} · RKT ${stats.rockets}${stats.missiles ? ` · MSL ${stats.missiles}` : ''}${stats.flares ? ` · FLR ${stats.flares}` : ''} · SEATS ${stats.cabin}</div>
        <div class="btns">${h.back ? '<button data-a="back">◂ BACK</button>' : ''}<button class="b-primary" data-a="go">${nextLabel}</button></div>`,
       'hangar',
       h.back ?? null,
@@ -229,6 +230,24 @@ export class Menus {
     for (const u of UPGRADES) this.on(`[data-u=${u.id}]`, () => h.buy(u));
     this.on('[data-a=go]', h.launch);
     if (h.back) this.on('[data-a=back]', h.back);
+  }
+
+  /** Level-up: pick 1 of 3 perks for this run. */
+  levelUp(levelNo: number, perks: Perks, choices: PerkDef[], pick: (p: PerkDef) => void) {
+    const cards = choices
+      .map((p, i) => {
+        const have = perks[p.id] ?? 0;
+        const pips = Array.from({ length: p.max }, (_, k) => `<i class="${k < have ? 'on' : k === have ? 'new' : ''}"></i>`).join('');
+        return `<button class="perk" data-a="perk${i}"><span class="tag">${p.tag}</span><b>${p.name}</b><span class="desc">${p.desc}</span><span class="pips">${pips}</span><span class="key">${i + 1}</span></button>`;
+      })
+      .join('');
+    this.show(
+      `<div class="h good">LEVEL ${levelNo}</div>
+       <div class="dim">Choose one upgrade for this run.</div>
+       <div class="perks">${cards}</div>`,
+      'levelup',
+    );
+    choices.forEach((p, i) => this.on(`[data-a=perk${i}]`, () => pick(p)));
   }
 
   pause(pad: PadStatus, h: { resume: () => void; abort: () => void }) {

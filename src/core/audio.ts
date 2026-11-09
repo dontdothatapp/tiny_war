@@ -220,6 +220,9 @@ export class Audio {
     if (!this.throttle('crumble', 80)) return;
     this.noiseShot({ x, z, dur: 0.8 + Math.min(1.5, mass / 400), freq: 400, gain: Math.min(1.2, 0.3 + mass / 600), sweep: 0.3 });
   }
+  levelUp() {
+    [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => this.tone(f, 0.16, 0.12, 'square'), i * 80));
+  }
   winch() {
     this.tone(520, 0.12, 0.08, 'triangle', 1.5);
   }

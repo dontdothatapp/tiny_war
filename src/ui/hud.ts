@@ -34,6 +34,9 @@ export interface HudData {
   windSpeed: number;
   credits: number;
   pending: number;
+  level: number;
+  xp: number;
+  xpNext: number;
   sector: number;
   warnings: string[];
   objectives: HudObjective[];
@@ -160,6 +163,7 @@ export class Hud {
       <div class="row"><span>ARMOR</span><span class="${hpPct < 0.3 ? 'crit' : ''}">${bar(d.hp, d.maxHp)}</span><span>${Math.ceil(d.hp)}</span></div>
       <div class="row"><span>FUEL&nbsp;</span><span class="${fuelPct < 0.2 ? 'crit' : ''}">${bar(d.fuel, d.maxFuel)}</span><span>${Math.ceil((d.fuel / d.maxFuel) * 100)}%</span></div>
       <div class="row w"><span>GUN ${String(d.gun).padStart(4, ' ')}</span><span>RKT ${String(d.rockets).padStart(2, ' ')}</span>${d.maxMissiles ? `<span>MSL ${d.missiles}</span>` : ''}${d.maxFlares ? `<span>FLR ${d.flares}</span>` : ''}</div>
+      <div class="row"><span>LV ${String(d.level).padEnd(2, ' ')}</span><span class="xp">${bar(d.xp, d.xpNext)}</span><span>XP</span></div>
       <div class="row w"><span>CREW ${d.crew}/${d.cabin}</span><span>WT ${Math.round(d.mass)}</span><span>CR ${d.credits}${d.pending ? ` <b>+${d.pending}</b>` : ''}</span></div>`;
     const hdg = Math.round((((-d.heading * 180) / Math.PI) % 360 + 360) % 360);
     const windArrow = '↑↗→↘↓↙←↖'[Math.round((((d.windDir / (Math.PI * 2)) % 1) + 1) * 8) % 8];

@@ -20,11 +20,11 @@ import { VoxelWorld } from '../voxel/world';
 import { MapGenerator, WORLD_HEIGHT } from '../world/generator';
 import type { BaseDef, MapData } from '../world/mapTypes';
 import * as P from '../world/prefabs';
-import { HeliStats, SaveData, computeStats, level, levelCap, loadSave, upgradeCost, writeSave } from './progression';
+import { HeliStats, PerkDef, Perks, SaveData, UPGRADES, computeStats, level, levelCap, loadSave, rollPerks, upgradeCost, writeSave, xpToNext } from './progression';
 import { SceneRig } from './scene';
 import { StructureState, StructureTracker } from './structures';
 
-type State = 'title' | 'briefing' | 'playing' | 'paused' | 'over' | 'menu';
+type State = 'title' | 'briefing' | 'playing' | 'paused' | 'levelup' | 'over' | 'menu';
 
 interface RunState {
   seed: number;
@@ -36,6 +36,11 @@ interface RunState {
   rescued: number;
   sectorsCleared: number;
   startTime: number;
+  /** run XP / level; each level-up offers 1 of 3 perks */
+  xp: number;
+  level: number;
+  pendingLevels: number;
+  perks: Perks;
 }
 
 interface Ammo {
@@ -53,7 +58,6 @@ const ACQUIRE_CONE = 0.27;
 const KEEP_CONE = 0.46;
 /** Time a clearly better candidate must stay better before the gunner switches. */
 const SWITCH_DELAY = 0.35;
-const LOCK_TIME = 0.6;
 
 /** Something the gunner has picked to shoot at. */
 interface Designation {
@@ -121,7 +125,12 @@ export class Game {
   private mapPlayed = false;
   private camFocus = new THREE.Vector3();
   private camVel = new THREE.Vector3();
-  private zoom = 210;
+  private zoom = 285;
+  private camLead = new THREE.Vector3();
+  /** hint for the nearest pickup ('' = none) */
+  private pickupHint = '';
+  private hintPickup: Pickup | null = null;
+  private pickupTipShown = false;
   private shake = 0;
   private sectorCleared = false;
   private overT = 0;
@@ -296,7 +305,8 @@ export class Game {
     // flown in (craters, wrecks, destroyed objectives) gets a brand-new theatre.
     const reuse = this.map && this.map.sector === 1 && !this.mapPlayed;
     const seed = reuse ? this.map.seed : Math.floor(Math.random() * 1e6);
-    this.run = { seed, sector: 1, pending: 0, earned: 0, kills: 0, structures: 0, rescued: 0, sectorsCleared: 0, startTime: performance.now() };
+    this.run = { seed, sector: 1, pending: 0, earned: 0, kills: 0, structures: 0, rescued: 0, sectorsCleared: 0, startTime: performance.now(), xp: 0, level: 1, pendingLevels: 0, perks: {} };
+    this.pickupTipShown = false;
     if (reuse) this.resetSectorEntities();
     else this.loadSector(seed, 1);
     this.showBriefing();
@@ -341,6 +351,8 @@ export class Game {
     this.state = 'menu';
     this.hud.setVisible(false);
     const label = midRun && this.run ? `LAUNCH SECTOR ${this.run.sector} ▸` : 'START RUN ▸';
+    // outside a run the shop shows base stats (run perks don't carry over)
+    this.stats = computeStats(this.save, midRun ? this.run?.perks : undefined);
     this.menus.hangar(this.save, this.stats, label, {
       buy: (u) => {
         const lv = level(this.save, u.id);
@@ -352,7 +364,7 @@ export class Game {
         this.save.credits -= cost;
         this.save.levels[u.id] = lv + 1;
         writeSave(this.save);
-        this.stats = computeStats(this.save);
+        this.stats = computeStats(this.save, this.run?.perks);
         this.audio.ui();
         this.showHangar(midRun);
       },
@@ -415,6 +427,7 @@ export class Game {
     r.earned += bonus + rescueBonus;
     r.sectorsCleared++;
     const next = r.sector + 1;
+    const newItems = next > this.save.bestSector ? UPGRADES.filter((u) => u.unlock === next) : [];
     this.save.bestSector = Math.max(this.save.bestSector, next);
     writeSave(this.save);
     this.state = 'menu';
@@ -422,7 +435,7 @@ export class Game {
     this.menus.debrief(
       {
         title: `SECTOR ${r.sector} CLEARED`,
-        subtitle: `Sector ${next} unlocked new upgrade tiers. The next theatre is larger and better defended.`,
+        subtitle: `The next theatre is larger and better defended.${newItems.length ? ` New in the shop: ${newItems.map((u) => u.name).join(', ')}.` : ' Shop upgrade caps raised.'}`,
         good: true,
         lines: [
           ['Sector bonus', `${bonus} CR`],
@@ -430,6 +443,7 @@ export class Game {
           ['Credits banked this run', `${r.earned} CR`],
           ['Emplacements destroyed', String(r.kills)],
           ['Crew rescued', String(r.rescued)],
+          ['Run level', `${r.level}`],
         ],
       },
       () => {
@@ -522,7 +536,7 @@ export class Game {
     this.desig = this.desigCand = null;
     this.aimValid = false;
     this.projectiles.playerTarget = this.heliTarget;
-    this.stats = computeStats(this.save);
+    this.stats = computeStats(this.save, this.run?.perks);
     this.heli.stats = this.stats;
     this.heli.assists = this.save.settings.assists;
     const f = this.map.farp;
@@ -532,6 +546,7 @@ export class Game {
     this.sectorCleared = false;
     this.heliTarget.alive = true;
     this.camFocus.set(f.padX, f.y, f.padZ);
+    this.camLead.set(0, 0, 0);
     this.chunks.prime(f.padX, f.padZ - 40, 240);
   }
 
@@ -561,6 +576,8 @@ export class Game {
     if (this.state === 'playing' || this.state === 'over') this.updatePlaying(dt);
     else if (this.state === 'paused') {
       if (inp.hit('Escape')) this.resume();
+    } else if (this.state === 'levelup') {
+      for (let i = 0; i < 3; i++) if (inp.hit(`Digit${i + 1}`) && this.levelChoices[i]) this.pickPerk(this.levelChoices[i]);
     } else {
       // attract mode: slow pan over the map behind menus
       this.titleT += dt;
@@ -569,7 +586,10 @@ export class Game {
       this.camFocus.set(f.x + Math.sin(t) * 120, f.y, f.z - 120 - Math.cos(t * 0.7) * 80);
       this.updateWorldSystems(dt);
     }
+    // engine/rotor loops only while flying (silent in pause, level-up and menus)
+    if (this.state !== 'playing' && this.state !== 'over') this.audio.engine(0, 0, 0, false);
     this.updateCamera(dt);
+    this.chunks.viewRadius = 140 + this.zoom * 0.5;
     this.chunks.update(this.camFocus.x, this.camFocus.z - 30);
     this.evictT -= dt;
     if (this.evictT <= 0) {
@@ -656,6 +676,11 @@ export class Game {
       if (pad.dpadY()) this.zoom = clamp(this.zoom + pad.dpadY() * 170 * dt, 150, 360);
     }
 
+    if (this.state === 'playing' && this.run && this.run.pendingLevels > 0 && !h.crashed && !h.dead) {
+      this.openLevelUp();
+      return;
+    }
+
     // controls
     const alive = this.state === 'playing' && !h.crashed;
     // controller axes (analog) are summed with the keyboard
@@ -686,6 +711,7 @@ export class Game {
     if (h.crashed && !h.dead && h.onGround) this.heliDestroyed();
 
     if (alive) {
+      if (this.stats.regen > 0 && !h.landed) h.hp = Math.min(this.stats.maxHp, h.hp + this.stats.regen * dt);
       this.updateAim(dt);
       this.updateWeapons(dt);
       this.updateWinch(dt);
@@ -746,13 +772,14 @@ export class Game {
 
     // re-validate the current target, then look for a better one
     const cur = this.desig && this.desigValid(this.desig) ? this.desig : null;
-    const curScore = cur ? this.desigScore(cur, fwd, KEEP_CONE, AIM_RANGE + 40) : Infinity;
+    const cm = this.stats.coneMul;
+    const curScore = cur ? this.desigScore(cur, fwd, KEEP_CONE * cm, AIM_RANGE + 40) : Infinity;
     const keep = cur && curScore < Infinity ? cur : null;
     const best = this.findTarget(fwd);
     if (!keep) {
       this.desig = best;
       this.desigCand = null;
-    } else if (best && !this.sameTarget(best, keep) && this.desigScore(best, fwd, ACQUIRE_CONE, AIM_RANGE) < curScore - 30) {
+    } else if (best && !this.sameTarget(best, keep) && this.desigScore(best, fwd, ACQUIRE_CONE * cm, AIM_RANGE) < curScore - 30) {
       // clearly better candidate: switch only if it stays better for a moment
       if (this.desigCand && this.sameTarget(this.desigCand, best)) this.desigCandT += dt;
       else {
@@ -812,7 +839,7 @@ export class Game {
     let best: Designation | null = null;
     let bestScore = Infinity;
     const consider = (t: Designation) => {
-      const sc = this.desigScore(t, fwd, ACQUIRE_CONE, AIM_RANGE);
+      const sc = this.desigScore(t, fwd, ACQUIRE_CONE * this.stats.coneMul, AIM_RANGE);
       if (sc < bestScore) {
         bestScore = sc;
         best = t;
@@ -915,7 +942,7 @@ export class Game {
     if (inp.hit('KeyF') || this.padHit(missileBtn)) {
       if (st.missiles <= 0) this.hud.message('Guided missiles not installed (hangar upgrade)', '#ffb84a', 1800);
       else if (this.ammo.missiles <= 0) this.audio.deny();
-      else if (!this.desig || this.lockT < LOCK_TIME) {
+      else if (!this.desig || this.lockT < this.stats.lockTime) {
         this.audio.deny();
         this.hud.message('NO LOCK — keep the nose on a target', '#ffb84a', 1500);
       } else {
@@ -1060,6 +1087,7 @@ export class Game {
   private damageHeli(amount: number, cause: string) {
     const h = this.heli;
     if (h.dead || amount <= 0 || this.state !== 'playing') return;
+    amount *= this.stats.damageMul;
     h.hp -= amount;
     h.shake = Math.max(h.shake, Math.min(1, amount / 25));
     this.rumble(Math.min(1, 0.25 + amount / 25), 0.6, Math.min(500, 120 + amount * 8));
@@ -1151,8 +1179,59 @@ export class Game {
 
   private addCredits(n: number, why: string) {
     if (!this.run || this.state !== 'playing') return;
-    this.run.pending += n;
-    this.hud.message(`+${n} CR · ${why}`, '#e8d24a', 2200);
+    const cr = Math.round(n * this.stats.creditMul);
+    this.run.pending += cr;
+    this.hud.message(`+${cr} CR · ${why}`, '#e8d24a', 2200);
+    this.addXp(n);
+  }
+
+  private levelChoices: PerkDef[] = [];
+
+  private addXp(n: number) {
+    const r = this.run;
+    if (!r) return;
+    r.xp += n;
+    while (r.xp >= xpToNext(r.level)) {
+      r.xp -= xpToNext(r.level);
+      r.level++;
+      r.pendingLevels++;
+    }
+  }
+
+  /** Pause and offer 1 of 3 perks. */
+  private openLevelUp() {
+    const r = this.run!;
+    const choices = rollPerks(r.perks);
+    if (!choices.length) {
+      r.pendingLevels = 0;
+      return;
+    }
+    this.state = 'levelup';
+    this.levelChoices = choices;
+    this.audio.levelUp();
+    this.rumble(0.2, 0.5, 200);
+    this.menus.levelUp(r.level - r.pendingLevels + 1, r.perks, choices, (p) => this.pickPerk(p));
+  }
+
+  private pickPerk(p: PerkDef) {
+    const r = this.run;
+    if (!r || this.state !== 'levelup') return;
+    r.perks[p.id] = (r.perks[p.id] ?? 0) + 1;
+    r.pendingLevels--;
+    const h = this.heli;
+    this.stats = computeStats(this.save, r.perks);
+    h.stats = this.stats;
+    // immediate effects
+    if (p.id === 'hull') h.hp = Math.min(this.stats.maxHp, h.hp + 25);
+    if (p.id === 'fuelTanks') h.fuel = this.stats.maxFuel;
+    if (p.id === 'racks') this.ammo.rockets = Math.min(this.stats.rockets, this.ammo.rockets + 6);
+    if (p.id === 'hellfire') this.ammo.missiles = Math.min(this.stats.missiles, this.ammo.missiles + 2);
+    if (p.id === 'flarePods') this.ammo.flares = Math.min(this.stats.flares, this.ammo.flares + 4);
+    this.audio.ui();
+    this.menus.hide();
+    this.state = 'playing';
+    this.hud.message(`${p.name.toUpperCase()} ${'I'.repeat(r.perks[p.id]!)}`, '#e8d24a', 2500);
+    if (r.pendingLevels > 0) this.openLevelUp();
   }
 
   private bank() {
@@ -1269,39 +1348,63 @@ export class Game {
     }
   }
 
-  private nearestPickup(): Pickup | null {
-    const h = this.heli;
-    let best: Pickup | null = null;
-    let bd = 8;
-    for (const p of this.pickups) {
-      if (!p.alive) continue;
-      const d = Math.hypot(p.pos.x - h.pos.x, p.pos.z - h.pos.z);
-      if (d < bd) {
-        bd = d;
-        best = p;
-      }
-    }
-    return best;
-  }
-
+  /**
+   * Supplies: land within ~18 of a crate, or hover over it (within 14, below
+   * 34 above it, slower than 22) and the crew grabs / winches it in under a second.
+   */
   private updateWinch(dt: number) {
     const h = this.heli;
-    const p = this.nearestPickup();
-    const hspeed = Math.hypot(h.vel.x, h.vel.z);
-    const height = p ? h.pos.y - p.pos.y : 99;
-    const ok = p && height < 26 && height > 1 && hspeed < 12 && this.world.lineClear(p.pos.x, p.pos.y + 1.5, p.pos.z, h.pos.x, h.pos.y, h.pos.z, 0.5, 1.5);
+    let p: Pickup | null = null;
+    let d = 45;
+    for (const q of this.pickups) {
+      if (!q.alive) continue;
+      const dd = Math.hypot(q.pos.x - h.pos.x, q.pos.z - h.pos.z);
+      if (dd < d) {
+        d = dd;
+        p = q;
+      }
+    }
+    this.pickupHint = '';
+    this.hintPickup = p;
+    if (p && !this.pickupTipShown) {
+      this.pickupTipShown = true;
+      this.hud.message('SUPPLIES: hover low over the crate, or land next to it', '#9dff9a', 4500);
+    }
+    // landed: the crew grabs every crate within reach
+    if (h.landed) {
+      for (const q of this.pickups) {
+        if (!q.alive || Math.hypot(q.pos.x - h.pos.x, q.pos.z - h.pos.z) >= 18) continue;
+        q.winch += dt / 0.5;
+        if (Math.random() < dt * 6) this.audio.winch();
+        if (q.winch >= 1) this.collect(q);
+      }
+    }
+    let ok = false;
+    let landedNear = false;
+    let height = 0;
+    if (p && p.alive) {
+      height = h.pos.y - p.pos.y;
+      const hspeed = Math.hypot(h.vel.x, h.vel.z);
+      landedNear = h.landed && d < 18;
+      const inRange = d < 14;
+      const low = height < 34;
+      const slow = hspeed < 22;
+      const clear = landedNear || (inRange && this.world.lineClear(p.pos.x, p.pos.y + 1.5, p.pos.z, h.pos.x, h.pos.y, h.pos.z, 0.5, 2));
+      ok = landedNear || (inRange && low && slow && clear);
+      if (!ok) this.pickupHint = d >= 14 ? '' : !clear ? 'BLOCKED' : !low ? 'LOWER' : 'SLOW DOWN';
+    }
     if (this.winchTarget && this.winchTarget !== p) {
       this.winchTarget.winch = 0;
       this.winchTarget.lift = 0;
     }
     this.winchTarget = ok ? p : null;
-    if (p && ok) {
-      p.winch += dt / this.stats.winchTime;
-      p.lift = p.winch * Math.max(0, height - 3);
+    if (p && ok && !landedNear) {
+      p.winch += dt / 0.8;
+      p.lift = landedNear ? 0 : p.winch * Math.max(0, height - 3);
       if (Math.random() < dt * 8) this.audio.winch();
       if (p.winch >= 1) this.collect(p);
     }
-    this.winchLine.visible = !!(p && ok && p.alive);
+    this.winchLine.visible = !!(p && ok && p.alive && !landedNear);
     if (this.winchLine.visible && p) {
       const pos = this.winchLine.geometry.attributes.position as THREE.BufferAttribute;
       pos.setXYZ(0, h.pos.x, h.pos.y + 1.5, h.pos.z);
@@ -1371,6 +1474,7 @@ export class Game {
           r.crew--;
           r.boarded++;
           h.crew++;
+          this.addXp(30);
           this.audio.ui();
           this.hud.message(`CREW BOARDED ${r.boarded}/${r.total}`, '#9dff9a', 1500);
           if (r.done) this.hud.message('All crew aboard — fly them home to the FARP', '#9dff9a');
@@ -1444,13 +1548,16 @@ export class Game {
   private updateCamera(dt: number) {
     const cam = this.rig.camera;
     let target: THREE.Vector3;
-    if (this.state === 'playing' || this.state === 'over' || this.state === 'paused') {
+    if (this.state === 'playing' || this.state === 'over' || this.state === 'paused' || this.state === 'levelup') {
       const h = this.heli;
-      target = h.pos.clone().addScaledVector(h.vel, 0.55);
-      target.y = h.pos.y - h.agl * 0.6;
-      // springy follow
-      const k = 1 - Math.exp(-4 * dt);
-      this.camFocus.lerp(target, k);
+      // look ahead along the velocity (more on the screen's short vertical axis), smoothed
+      const want = new THREE.Vector3(h.vel.x * 1.0, 0, h.vel.z * 1.4);
+      if (want.length() > 85) want.setLength(85);
+      this.camLead.lerp(want, 1 - Math.exp(-1.6 * dt));
+      // aim at the aircraft's altitude so it stays near the centre instead of drifting up-screen
+      target = h.pos.clone().add(this.camLead);
+      target.y = h.pos.y - h.agl * 0.15;
+      this.camFocus.lerp(target, 1 - Math.exp(-5 * dt));
     } else target = this.camFocus;
     void this.camVel;
     const pitch = 0.98; // ~56 degrees
@@ -1529,6 +1636,9 @@ export class Game {
       windSpeed: h.wind.length(),
       credits: this.save.credits,
       pending: r?.pending ?? 0,
+      level: r?.level ?? 1,
+      xp: r?.xp ?? 0,
+      xpNext: xpToNext(r?.level ?? 1),
       sector: this.map.sector,
       warnings,
       objectives: objs,
@@ -1555,7 +1665,7 @@ export class Game {
     // gunner designation (bracket + name), red LOCK when a missile can be fired
     if (this.desig) {
       hud.project(this.desig.point, cam, sp);
-      const locked = this.stats.missiles > 0 && this.lockT >= LOCK_TIME;
+      const locked = this.stats.missiles > 0 && this.lockT >= this.stats.lockTime;
       const col = locked ? '#ff4a3a' : this.desig.kind === 'turret' ? '#ff8a5a' : '#ffe46a';
       hud.bracket(sp.x, sp.y, 16, col, locked ? `${this.desig.label} · LOCK` : this.desig.label);
     }
@@ -1581,7 +1691,8 @@ export class Game {
       const d = Math.hypot(p.pos.x - h.pos.x, p.pos.z - h.pos.z);
       if (d > 160) continue;
       hud.project(new THREE.Vector3(p.pos.x, p.pos.y + 3, p.pos.z), cam, sp);
-      hud.edgeMarker(sp.x, sp.y, PICKUP_COLOR[p.type], PICKUP_LABEL[p.type], sp.behind);
+      const hint = p === this.hintPickup && this.pickupHint ? ` · ${this.pickupHint}` : '';
+      hud.edgeMarker(sp.x, sp.y, PICKUP_COLOR[p.type], PICKUP_LABEL[p.type] + hint, sp.behind);
       if (p === this.winchTarget) hud.progressRing(sp.x, sp.y + 10, p.winch, PICKUP_COLOR[p.type]);
     }
     for (const s of this.rescues) {

@@ -89,9 +89,19 @@ Player weapons:
 
 `src/game/progression.ts`, `game.ts`
 
-- A **run** is a series of sectors with a random seed. The map grows from 1024² to 2048². The number of bases, the threat types and enemy accuracy and damage all scale with the sector.
+- A **run** is a series of sectors with a random seed. The map grows from 768² in sector 1 to 2048². Sector 1 has one base (never a SAM battery) and one rescue site. Bases increase by one every two sectors, up to five. Threat types and enemy accuracy and damage scale with the sector.
 - **Credits** come from destroying targets, neutralising bases, rescues and sector-clear bonuses. They are **carried** in the aircraft until you land on the FARP pad. If you die, you lose them. This creates a push-your-luck tension between going for one more target and heading home first.
-- **Hangar:** 13 permanent upgrade lines (engine, fuel, armour, ammo, cannon damage and rate of fire, rocket count and warheads, missiles, flares, cabin seats, winch, radar). **Caps rise as you reach new sectors**, and some systems only unlock at sector 2 or 3.
+- **Level-ups (per run):** XP equals the credit value of whatever you destroy, plus 30 per crew member boarded. Each level needs 45% more XP than the last, starting at 100, so a first sector gives roughly 3–4 level-ups. A level-up pauses the game and offers three random perks that aren't maxed out:
+  - defence: hull, ceramic plates, damage control;
+  - flight: ferry tanks, overboost;
+  - cannon: linked feed, HE rounds;
+  - rockets: extra racks, thermobaric;
+  - systems: veteran gunner, Hellfire pair, flare pods, salvage.
+
+  Perks stack on top of the shop stats in `computeStats(save, perks)` and reset when the run ends.
+- **Hangar shop (permanent):** spend banked credits. Items appear gradually: four at the start (engine, armour, fuel, rockets), then missiles, ammo bay and cabin space at sector 2, then cannon HE, flares and thermobaric warheads at sector 3, then feed system and radar at sector 4. A teaser shows the next batch. Each new sector also raises the level caps.
+- **Supplies:** landing within about 18 voxels of a crate collects it (and any others in reach). So does hovering over it within 14 voxels horizontally, lower than 34 above it and slower than 22. The crate's marker says LOWER, SLOW DOWN or BLOCKED when you're close but not collecting.
+- **Camera:** the default zoom is wider. The camera aims at the aircraft's altitude, so the aircraft stays near the centre of the screen, and a smoothed look-ahead along your velocity shows more of what's ahead.
 - **Fail states:** the aircraft is destroyed, or you run out of fuel and land outside the FARP (stranded).
 
 The brief said there are no humans on the map. Downed crews are therefore shown only as red signal smoke and a strobe, never as figures. You land next to the smoke and they board. Tell me if you'd prefer visible survivors or captured soldiers in compounds.
@@ -119,7 +129,7 @@ src/
   entities/  helicopter (+voxel model), turrets, projectiles, pickups/rescue
   fx/        cube particles (smoke/fire/glow), debris, explosion effects
   game/      game loop/state, progression & save, structure integrity, scene rig
-  ui/        HUD (DOM + overlay canvas, radar, map), menus/hangar
+  ui/        HUD (DOM + overlay canvas, radar, map), menus (title, briefing, level-up, shop, debrief, pause)
 ```
 
 `window.game.simulate(seconds)` advances the simulation without rendering, which is handy for automated tests and bots.

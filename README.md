@@ -55,12 +55,15 @@ PlayStation controllers show ✕ ○ □ △ and L1/R1/L2/R2 labels instead. Som
 ## Game loop
 
 1. Take off from the **FARP**, your forward rearm and refuel pad.
-2. Destroy each enemy base's primary target: a radar site, command bunker, SAM battery, fuel depot or arms factory. The bases are defended by MG nests, AA guns, flak, SAMs and tanks.
+2. Destroy each enemy base's primary target: a radar site, command bunker, SAM battery, fuel depot or arms factory. The bases are defended by MG nests, AA guns, flak, SAMs and tanks. Sector 1 has a single base on a small map. Later sectors add more bases and get larger.
 3. Optionally, land beside the red smoke to pick up downed crews, then fly them home.
-4. Hover low over supply crates to winch up fuel, ammo or repairs. Some crates are hidden inside enemy buildings, so you have to blow the building open first.
+4. Pick up supply crates (fuel, ammo, repairs) by hovering low and slow over them or by landing next to them. A label on the crate's marker tells you if you need to go lower or slow down. Some crates are hidden inside enemy buildings, so you have to blow the building open first.
 5. **Land on the FARP pad** to refuel, rearm and repair, and to **bank the credits you're carrying**. If you lose the aircraft, you lose the credits you were carrying.
 6. Once every primary target is destroyed, land at the FARP to clear the sector. The next sector is larger and better defended. Spend credits in the hangar between sectors.
 
-Upgrades persist across runs (saved in `localStorage`). Each new sector you reach raises the upgrade caps and unlocks new systems (missiles, flares, thermobaric rockets, radar).
+**Progression** has two parts:
+
+- **Level-ups (this run only):** destroying things, neutralising bases and boarding crews earns XP. Each time you level up, the game pauses and offers you a choice of three upgrades: armour, damage reduction, repairs in flight, fuel, engine power, cannon and rocket boosts, a better gunner, missiles, flares or bonus credits. Pick with a click, the 1/2/3 keys, or the D-pad and A.
+- **Hangar shop (permanent, saved in `localStorage`):** spend banked credits between sectors. You start with four items: engine, armour, fuel and rockets. Reaching sector 2, 3 and 4 adds a few more each time, and each new sector also raises the level caps.
 
 Design notes, engine rationale and the roadmap are in [`docs/DESIGN.md`](docs/DESIGN.md).

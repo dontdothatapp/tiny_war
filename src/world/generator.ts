@@ -26,7 +26,8 @@ interface Site {
 }
 
 export function sectorSize(sector: number): number {
-  return Math.min(2048, 1024 + (sector - 1) * 256);
+  // short first sorties, growing theatres later
+  return Math.min(2048, 640 + sector * 128);
 }
 
 /**
@@ -161,13 +162,14 @@ export class MapGenerator implements ChunkFiller {
       return null;
     };
 
-    const nBases = clamp(2 + this.sector, 3, 7);
+    // 1 base in sector 1, then +1 every two sectors (max 5)
+    const nBases = Math.min(5, 1 + Math.floor(this.sector / 2));
     for (let i = 0; i < nBases; i++) tryPlace('base', r.range(52, 64), 110, 300 + i * 20);
     const nTowns = 2 + Math.floor(S / 512);
     for (let i = 0; i < nTowns; i++) tryPlace('town', r.range(55, 80), 70, 160);
     const nOasis = r.int(2, 4);
     for (let i = 0; i < nOasis; i++) tryPlace('oasis', r.range(22, 34), 40, 120);
-    const nRescue = Math.min(5, 2 + Math.floor(this.sector / 2));
+    const nRescue = Math.min(4, 1 + Math.floor((this.sector - 1) / 2));
     for (let i = 0; i < nRescue; i++) tryPlace('rescue', 18, 50, 220);
     // keep flattened sites at a sane level
     for (const s of this.sites) s.h = clamp(s.h, 9, 22);
@@ -484,7 +486,8 @@ export class MapGenerator implements ChunkFiller {
 
   private populateBase(s: Site) {
     const r = this.rng;
-    const kinds: BaseKind[] = ['radar', 'command', 'sam', 'depot', 'factory'];
+    // no SAM battery in the very first sector
+    const kinds: BaseKind[] = this.sector === 1 ? ['radar', 'command', 'depot', 'factory'] : ['radar', 'command', 'sam', 'depot', 'factory'];
     const baseIndex = this.bases.length;
     // first bases are always one of each to guarantee variety
     const kind = baseIndex < kinds.length ? r.shuffle(kinds.slice()).find((k) => !this.bases.some((b) => b.kind === k))! : r.pick(kinds);
