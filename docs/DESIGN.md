@@ -25,6 +25,9 @@ The brief: the game runs in the browser, uses voxels, and lets you destroy the w
 - **Time of day and weather** (`game/atmosphere.ts`): a table of five themes (midday, dusk, night, sandstorm, dawn) sets sun colour, strength and direction, ambient, haze, grade, bloom strength, how bright smoke is, lamp glow, the nose searchlight and the ambient dust rate. Sectors cycle through them. Three of the values are rules, not looks: enemy sight range, wind strength and radar range. Fog is measured from the camera's focus distance, so zooming doesn't change the haze. `?sky=<id>` forces a theme.
 - **Cloud shadows** (`voxel/voxelMaterial.ts`): two octaves of value noise in world XZ, drifting downwind, multiply the surface colour. The edge is dithered with the per-voxel hash, so the shadow boundary is made of whole voxels and matches the art. All voxel materials share the same time, cloud and glow uniforms.
 
+- **The board** (`game/diorama.ts`): a sector is a miniature, a square slab of desert hanging in the air. The map still ends at its boundary; what is new is everything around that cut. Below the edge the cliff continues as layered rock, then breaks into a ragged underside that tapers inward (one column per 8 voxels, deeper towards the middle, a wall wherever a column hangs lower than its neighbour). A few loose rocks bob beside the rim, blocky clouds drift downwind far below, and the sky deepens to a cooler colour below the horizon so the void reads as air. All of it uses the voxel material, so it gets the same dither, lighting and cloud shadows as the terrain. A haze-coloured sheet inside the slab means that where chunks have not streamed in yet you see haze, never the void through the map.
+- **The far model** (same file): voxel chunks only exist around the helipad, so the opening shot of the whole board needs a stand-in. The far model is the map as blocky columns, one per 4 voxels (8 on maps over 1024): terrain height from the heightmap, and whatever a prefab puts on top sampled at the column centre (palm crowns become floating tiles, not pillars). It leaves out exactly the chunk columns that are meshed around the pad (`ChunkRenderer.inRange`, the same test the streaming uses), so the two never overlap and there is nothing to cross-fade: by the time the camera lands, the far model is out of frame, and it is then freed. It builds in 25–60 ms and is one draw call.
+
 ## 3. Destruction model
 
 `src/voxel/destruction.ts`, `bodies.ts`, `game/structures.ts`
@@ -113,6 +116,7 @@ Player weapons:
   Perks stack on top of the shop stats in `computeStats(save, perks)` and reset when the run ends.
 - **Hangar shop (permanent):** spend banked credits. Items appear gradually: four at the start (engine, armour, fuel, rockets), then missiles, ammo bay and cabin space at sector 2, then cannon HE, flares and thermobaric warheads at sector 3, then feed system and radar at sector 4. A teaser shows the next batch. Each new sector also raises the level caps.
 - **Supplies:** landing within about 18 voxels of a crate collects it (and any others in reach). So does hovering over it within 14 voxels horizontally, lower than 34 above it and slower than 22. The crate's marker says LOWER, SLOW DOWN or BLOCKED when you're close but not collecting.
+- **Sector intro** (`game/intro.ts`, `ui/titleCard.ts`): the briefing is shown over an establishing shot of the whole board, seen corner-on from the sunlit side at a low angle so two cliff faces and the underside show. LAUNCH holds that shot for 0.8 s with the sector title, then the camera dives for 4 s and ends exactly on the game camera: it settles over the helipad first and closes the distance last, with distance blended in log space so the zoom feels even. The rotor spools up during the last two seconds, so the aircraft is ready to lift when control arrives. While the camera is far the clip range and the shadowed area grow to take in the whole board and the fog backs off. Space, Enter, Esc, a click or A / B / Menu skips it (it fast-forwards at 8×, it does not cut). `?intro=0` turns it off.
 - **Camera:** the default zoom is wider. The camera aims at the aircraft's altitude, so the aircraft stays near the centre of the screen, and a smoothed look-ahead along your velocity shows more of what's ahead.
 - **Kill streak:** each kill within 6 seconds of the previous one adds 10% to credits earned, up to ×2 (XP is not multiplied). Emplacements, mobiles and enemy structures worth 15 CR or more count; walls don't.
 - **Feedback:** rewards float up from the kill, a red arc around the aircraft points at where a hit came from, base kills and gunship kills trigger a short slow-motion beat (0.3× for a fraction of a second, real-time countdown), and explosions add a ground shockwave ring, a white-hot core and a ring of kicked-up dust.
@@ -144,8 +148,10 @@ src/
              projectiles, pickups/rescue
   fx/        cube particles (smoke/fire/glow), debris, explosion effects
   game/      game loop/state, progression & save, structure integrity,
-             scene rig + post-processing, time of day / weather
-  ui/        HUD (DOM + overlay canvas, radar, map), menus (title, briefing, level-up, shop, debrief, pause)
+             scene rig + post-processing, time of day / weather,
+             the floating board + far model, sector intro camera
+  ui/        HUD (DOM + overlay canvas, radar, map), menus (title, briefing, level-up, shop, debrief, pause),
+             sector title card
 ```
 
 `window.game.simulate(seconds)` advances the simulation without rendering, which is handy for automated tests and bots.

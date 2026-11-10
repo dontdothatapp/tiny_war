@@ -13,6 +13,7 @@ import { HitTarget, Projectile, Projectiles } from '../entities/projectiles';
 import { TURRET_SPECS, Turret } from '../entities/turret';
 import { Hud, HudObjective, KEYBOARD_HELP, RadarBlip } from '../ui/hud';
 import { Menus, PadStatus } from '../ui/menus';
+import { TitleCard } from '../ui/titleCard';
 import { BodySystem } from '../voxel/bodies';
 import { ChunkRenderer } from '../voxel/chunkRenderer';
 import { Destruction } from '../voxel/destruction';
@@ -25,10 +26,12 @@ import * as P from '../world/prefabs';
 import type { VoxModel } from '../world/voxModel';
 import { HeliStats, PerkDef, Perks, SaveData, UPGRADES, computeStats, level, levelCap, loadSave, rollPerks, upgradeCost, writeSave, xpToNext } from './progression';
 import { Atmosphere, atmosphereFor } from './atmosphere';
+import { Diorama } from './diorama';
+import { CamPose, INTRO_DIVE, INTRO_HOLD, INTRO_SKIP_RATE, PLAY_PITCH, divePose, establishingPose, farness, newPose } from './intro';
 import { SceneRig } from './scene';
 import { StructureState, StructureTracker } from './structures';
 
-type State = 'title' | 'briefing' | 'playing' | 'paused' | 'levelup' | 'over' | 'menu';
+type State = 'title' | 'briefing' | 'intro' | 'playing' | 'paused' | 'levelup' | 'over' | 'menu';
 
 interface RunState {
   seed: number;
@@ -97,6 +100,7 @@ export class Game {
   readonly audio = new Audio();
   readonly hud: Hud;
   readonly menus: Menus;
+  private card: TitleCard;
   save: SaveData;
   stats: HeliStats;
   state: State = 'title';
@@ -114,6 +118,8 @@ export class Game {
   tracker!: StructureTracker;
   projectiles!: Projectiles;
   fx!: Effects;
+  /** the board's underside, the clouds below it and the far model used by the opening shot */
+  diorama!: Diorama;
   heli!: Helicopter;
   turrets: Turret[] = [];
   pickups: Pickup[] = [];
@@ -162,6 +168,22 @@ export class Game {
   private camVel = new THREE.Vector3();
   private zoom = 285;
   private camLead = new THREE.Vector3();
+  /** seconds on the establishing shot (briefing and intro share the clock, so its sway never jumps) */
+  private farT = 0;
+  /** seconds since LAUNCH, while the camera dives to the helipad */
+  private introT = 0;
+  private introSkip = false;
+  /** the rotor has started spooling up during the dive */
+  private introSpool = false;
+  /** `?intro=0` goes straight from the briefing to the cockpit */
+  private introOn = typeof location === 'undefined' || new URLSearchParams(location.search).get('intro') !== '0';
+  private farPose = newPose();
+  private playPose = newPose();
+  private camPose = newPose();
+  /** chunk radius meshed around the helipad at sector start; the far model covers the rest of the board */
+  private padRadius = 0;
+  private streamX = 0;
+  private streamZ = 0;
   /** hint for the nearest pickup ('' = none) */
   private pickupHint = '';
   private hintPickup: Pickup | null = null;
@@ -197,6 +219,7 @@ export class Game {
     this.input = new Input(this.rig.renderer.domElement);
     this.hud = new Hud(container);
     this.menus = new Menus(container);
+    this.card = new TitleCard(container);
     this.save = loadSave();
     this.stats = computeStats(this.save);
     this.rig.setPixelScale(this.save.settings.pixelScale);
@@ -364,6 +387,11 @@ export class Game {
     this.state = 'briefing';
     this.hud.setVisible(false);
     this.audio.music('hangar');
+    // the briefing looks at the whole board: voxel chunks around the helipad, the far model everywhere else
+    this.farT = 0;
+    const pad = this.map.farp;
+    this.chunks.prime(pad.padX, pad.padZ - 30, this.padRadius);
+    this.chunks.trim(pad.padX, pad.padZ - 30, this.padRadius);
     const threats = new Set<string>();
     for (const t of this.map.turrets) threats.add(TURRET_SPECS[t.type].name + 's');
     if (this.mobiles.some((m) => m.air)) threats.add('Gunship patrols');
@@ -386,17 +414,60 @@ export class Game {
     );
   }
 
+  /** LAUNCH pressed: the camera dives from the establishing shot to the helipad, then the sortie starts. */
   private launch() {
     this.mapPlayed = true;
     this.menus.hide();
+    this.audio.init();
+    this.audio.music('mission');
+    this.introT = 0;
+    this.introSkip = false;
+    this.introSpool = false;
+    if (!this.introOn) {
+      const f = this.map.farp;
+      this.camFocus.set(f.padX, f.y, f.padZ);
+      this.beginSortie();
+      return;
+    }
+    this.state = 'intro';
+    const skip = this.padMode ? `${this.pad.glyph(BTN.A)} SKIP` : 'SPACE · SKIP';
+    this.card.show(`SECTOR ${this.map.sector}`, this.atmo.name, `TARGETS · ${this.map.bases.map((b) => b.name).join(' · ')}`, skip);
+  }
+
+  /** Establishing shot behind the briefing, then the dive. Ends by handing over to the game camera. */
+  private updateIntro(dt: number) {
+    this.farT += dt;
+    if (this.state !== 'intro') return;
+    const inp = this.input;
+    // (the press that chose LAUNCH is still in the input buffer on the first frames)
+    const pressed = inp.hit('Space') || inp.hit('Enter') || inp.hit('Escape') || inp.mouseHit(0) || this.padHit(BTN.A) || this.padHit(BTN.B) || this.padHit(BTN.MENU);
+    if (pressed && this.introT > 0.35) this.introSkip = true;
+    this.introT += dt * (this.introSkip ? INTRO_SKIP_RATE : 1);
+    const total = INTRO_HOLD + INTRO_DIVE;
+    // the rotor spools up on the way down, so the aircraft is ready when the camera arrives
+    if (this.introT > total - 2.2) {
+      if (!this.introSpool) {
+        this.introSpool = true;
+        this.audio.engineStart();
+      }
+      const h = this.heli;
+      h.rpm = Math.min(1, h.rpm + dt * 0.5);
+      h.syncVisual(dt);
+    }
+    if (this.introT > INTRO_HOLD + INTRO_DIVE * 0.5) this.card.quiet();
+    if (this.introT >= total) this.beginSortie();
+  }
+
+  private beginSortie() {
+    this.card.hide();
+    this.diorama.setFar(0);
+    this.diorama.dropFarModel();
     this.hud.setVisible(true);
     this.hud.showHelp(true);
     setTimeout(() => this.hud.showHelp(false), 9000);
     this.state = 'playing';
-    this.audio.init();
-    this.audio.music('mission');
-    this.audio.engineStart();
-    this.hud.message('ENGINES START · ROTOR SPOOL-UP', '#9dff9a');
+    if (!this.introSpool) this.audio.engineStart();
+    if (this.heli.rpm < 0.9) this.hud.message('ENGINES START · ROTOR SPOOL-UP', '#9dff9a');
     const liftHint = this.padMode ? `Hold ${this.pad.glyph(BTN.RB)} to lift off` : 'Hold SPACE to lift off';
     this.hud.message(liftHint, '#9dff9a', 5000);
     if (this.padMode) setTimeout(() => this.audio.blocked && this.hud.message('Sound starts after one click or key press (browser rule)', '#ffb84a', 5000), 600);
@@ -524,6 +595,7 @@ export class Game {
     this.mobiles = [];
     this.convoy = null;
     this.pendingBlasts = [];
+    this.diorama?.dispose();
     this.projectiles?.clear();
     this.debris?.clear();
     this.smoke?.clear();
@@ -545,6 +617,11 @@ export class Game {
     this.sectorGroup.add(this.chunks.group);
     this.atmo = atmosphereFor(sector);
     this.rig.applyAtmosphere(this.atmo);
+    // the far model stands in for every chunk column outside the disc that is meshed around the helipad
+    this.padRadius = 140 + this.zoom * 0.5;
+    const pad = this.map.farp;
+    this.diorama = new Diorama(this.map, this.atmo, this.windVec(), (cx, cz) => ChunkRenderer.inRange(cx, cz, pad.padX, pad.padZ - 30, this.padRadius));
+    this.sectorGroup.add(this.diorama.group);
     const fog = this.rig.scene.fog as THREE.Fog;
     this.debris = new DebrisSystem(this.world);
     this.sectorGroup.add(this.debris.mesh);
@@ -632,7 +709,7 @@ export class Game {
     this.heliTarget.alive = true;
     this.camFocus.set(f.padX, f.y, f.padZ);
     this.camLead.set(0, 0, 0);
-    this.chunks.prime(f.padX, f.padZ - 40, 240);
+    this.chunks.prime(f.padX, f.padZ - 30, this.padRadius);
   }
 
   private windVec() {
@@ -667,24 +744,28 @@ export class Game {
     } else if (this.state === 'levelup') {
       for (let i = 0; i < 3; i++) if (inp.hit(`Digit${i + 1}`) && this.levelChoices[i]) this.pickPerk(this.levelChoices[i]);
     } else {
-      // attract mode: slow pan over the map behind menus
-      this.titleT += dt;
-      const f = this.map.farp;
-      const t = this.titleT * 0.04;
-      this.camFocus.set(f.x + Math.sin(t) * 120, f.y, f.z - 120 - Math.cos(t * 0.7) * 80);
+      if (this.state === 'briefing' || this.state === 'intro') this.updateIntro(dt);
+      else {
+        // attract mode: slow pan over the map behind menus
+        this.titleT += dt;
+        const f = this.map.farp;
+        const t = this.titleT * 0.04;
+        this.camFocus.set(f.x + Math.sin(t) * 120, f.y, f.z - 120 - Math.cos(t * 0.7) * 80);
+      }
       this.updateMobiles(dt);
       this.projectiles.update(dt);
       this.updateWorldSystems(dt);
     }
-    // engine/rotor loops only while flying (silent in pause, level-up and menus)
-    if (this.state !== 'playing' && this.state !== 'over') this.audio.engine(0, 0, 0, false);
+    // engine/rotor loops only while flying or spooling up (silent in pause, level-up and menus)
+    if (this.state === 'intro' && this.introSpool) this.audio.engine(this.heli.rpm, 0, 0, true);
+    else if (this.state !== 'playing' && this.state !== 'over') this.audio.engine(0, 0, 0, false);
     this.updateCamera(dt);
-    this.chunks.viewRadius = 140 + this.zoom * 0.5;
-    this.chunks.update(this.camFocus.x, this.camFocus.z - 30);
+    if (this.state !== 'paused' && this.state !== 'levelup') this.diorama.update(dt);
+    this.streamChunks();
     this.evictT -= dt;
     if (this.evictT <= 0) {
       this.evictT = 2;
-      const dropped = this.world.evict(this.camFocus.x, this.camFocus.z, 420, 1500);
+      const dropped = this.world.evict(this.streamX, this.streamZ, 420, 1500);
       for (const c of dropped) this.chunks.forget(c);
     }
     this.rig.updateSun(this.camFocus);
@@ -704,10 +785,20 @@ export class Game {
       this.pollInput();
       this.menuPad(dt);
       if (this.state === 'playing' || this.state === 'over') this.updatePlaying(dt);
+      else if (this.state === 'intro') this.updateIntro(dt);
       this.input.endFrame();
       this.updateCamera(dt);
-      this.chunks.update(this.camFocus.x, this.camFocus.z - 30, 2);
+      this.streamChunks(2);
     }
+  }
+
+  /** Chunks stream around the camera focus; while the opening shot is up they stay put around the helipad. */
+  private streamChunks(budgetMs?: number) {
+    const farView = this.state === 'briefing' || this.state === 'intro';
+    this.streamX = farView ? this.map.farp.padX : this.camFocus.x;
+    this.streamZ = farView ? this.map.farp.padZ : this.camFocus.z;
+    this.chunks.viewRadius = farView ? this.padRadius : 140 + this.zoom * 0.5;
+    this.chunks.update(this.streamX, this.streamZ - 30, budgetMs);
   }
 
   private resume() {
@@ -1903,35 +1994,65 @@ export class Game {
 
   private updateCamera(dt: number) {
     const cam = this.rig.camera;
-    let target: THREE.Vector3;
-    if (this.state === 'playing' || this.state === 'over' || this.state === 'paused' || this.state === 'levelup') {
+    let pitch = PLAY_PITCH;
+    let yaw = 0;
+    let dist = this.zoom;
+    /** 1 on the establishing shot, 0 on the game camera */
+    let far = 0;
+    if (this.state === 'briefing' || this.state === 'intro') {
+      const p = this.introPose();
+      this.camFocus.copy(p.focus);
+      pitch = p.pitch;
+      yaw = p.yaw;
+      dist = p.dist;
+      far = farness(dist, this.farPose.dist, this.zoom);
+    } else if (this.state === 'playing' || this.state === 'over' || this.state === 'paused' || this.state === 'levelup') {
       const h = this.heli;
       // look ahead along the velocity (more on the screen's short vertical axis), smoothed
       const want = new THREE.Vector3(h.vel.x * 1.0, 0, h.vel.z * 1.4);
       if (want.length() > 85) want.setLength(85);
       this.camLead.lerp(want, 1 - Math.exp(-1.6 * dt));
       // aim at the aircraft's altitude so it stays near the centre instead of drifting up-screen
-      target = h.pos.clone().add(this.camLead);
+      const target = h.pos.clone().add(this.camLead);
       target.y = h.pos.y - h.agl * 0.15;
       this.camFocus.lerp(target, 1 - Math.exp(-5 * dt));
-    } else target = this.camFocus;
+    }
     void this.camVel;
-    const pitch = 0.98; // ~56 degrees
-    const dist = this.zoom;
     const shake = Math.max(this.shake, this.heli?.shake ?? 0);
     this.shake = Math.max(0, this.shake - dt * 2);
     const sx = (Math.random() - 0.5) * shake * 3,
       sy = (Math.random() - 0.5) * shake * 3;
-    cam.position.set(this.camFocus.x + sx, this.camFocus.y + Math.sin(pitch) * dist + sy, this.camFocus.z + Math.cos(pitch) * dist);
+    const flat = Math.cos(pitch) * dist;
+    cam.position.set(this.camFocus.x + Math.sin(yaw) * flat + sx, this.camFocus.y + Math.sin(pitch) * dist + sy, this.camFocus.z + Math.cos(yaw) * flat);
     cam.lookAt(this.camFocus.x + sx * 0.5, this.camFocus.y, this.camFocus.z + sy * 0.5);
-    this.updateAtmosphere(dt, dist);
+    // the establishing shot sees the whole board: the far model stands in for distant chunks,
+    // the clip range and the shadowed area grow to take it all in, and the fog backs off
+    const S = this.map.size;
+    this.diorama.setFar(far);
+    this.rig.setDepthRange(lerp(5, 30, far), far > 0 ? dist + S * 7 : 1400);
+    this.rig.setShadowRange(far > 0 ? clamp(dist * 0.8, 200, S * 0.8) : 200);
+    this.updateAtmosphere(dt, dist, far * S * 0.9);
   }
 
-  /** Per-frame lighting and screen effects that follow the camera and the aircraft. */
-  private updateAtmosphere(dt: number, camDist: number) {
+  /** Camera for the establishing shot behind the briefing and for the dive that follows LAUNCH. */
+  private introPose(): CamPose {
+    const far = establishingPose(this.map.size, this.rig.camera, this.rig.sunDir.x, this.farT, this.farPose);
+    if (this.state === 'briefing') return far;
+    // ends exactly where the game camera starts
+    const h = this.heli;
+    const play = this.playPose;
+    play.focus.set(h.pos.x, h.pos.y - h.agl * 0.15, h.pos.z);
+    play.dist = this.zoom;
+    play.pitch = PLAY_PITCH;
+    play.yaw = 0;
+    return divePose(far, play, clamp((this.introT - INTRO_HOLD) / INTRO_DIVE, 0, 1), this.camPose);
+  }
+
+  /** Per-frame lighting and screen effects that follow the camera and the aircraft. `clear` pushes the fog back. */
+  private updateAtmosphere(dt: number, camDist: number, clear = 0) {
     const rig = this.rig;
     const a = this.atmo;
-    rig.setFocusDistance(camDist);
+    rig.setFocusDistance(camDist, clear);
     const fog = rig.scene.fog as THREE.Fog;
     this.smoke.setFog(fog.near, fog.far);
     this.glow.setFog(fog.near, fog.far);

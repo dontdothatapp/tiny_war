@@ -80,6 +80,8 @@ PlayStation controllers show ✕ ○ □ △ and L1/R1/L2/R2 labels instead. Som
 
 **Kill streaks.** Each kill within 6 seconds of the last one adds 10% to the credits you earn, up to ×2. The streak and its timer show under the radar.
 
+**Each sector is a miniature:** a slab of desert floating over the clouds. The briefing shows the whole board, and when you launch the camera dives down to your helipad while the rotor spools up. Press Space (or A on a controller) to skip it; add `?intro=0` to the URL to turn it off.
+
 **Conditions** change with the sector and are listed in the briefing: midday, dusk, night (enemy gunners pick you up 25% later, and your searchlight shows the ground ahead), sandstorm (strong wind; enemy sight and your radar are cut by a third) and dawn, then the cycle repeats. Add `?sky=day|dusk|night|storm|dawn` to the URL to fly any sector under a chosen sky.
 
 **Progression** has two parts:

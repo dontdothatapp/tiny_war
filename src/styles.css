@@ -589,3 +589,98 @@ body {
 .hud .xp {
   color: var(--gold);
 }
+
+/* ------------------------------------------------------------------ sector intro */
+.intro {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.intro .bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  transition: transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+/* the top bar fades out downward so the title reads on any sky */
+.intro .bar.top {
+  top: 0;
+  height: 28vh;
+  background: linear-gradient(to bottom, #0b0a08 0, #0b0a08 30%, rgba(11, 10, 8, 0.5) 62%, rgba(11, 10, 8, 0) 100%);
+  transform: translateY(-101%);
+}
+.intro .bar.bot {
+  bottom: 0;
+  height: 9vh;
+  background: #0b0a08;
+  transform: translateY(101%);
+}
+.intro.on .bar {
+  transform: none;
+}
+.intro .card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 4vh;
+  padding: 0 24px;
+  text-align: center;
+  opacity: 0;
+  transform: translateY(10px);
+  transition:
+    opacity 0.5s,
+    transform 0.8s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.intro.on .card {
+  opacity: 1;
+  transform: none;
+  transition-delay: 0.15s;
+}
+.intro.on.quiet .card {
+  opacity: 0;
+  transition-delay: 0s;
+}
+.intro .card .n {
+  font-size: clamp(48px, 7vw, 100px);
+  line-height: 0.9;
+  color: #f2e2b8;
+  letter-spacing: 0.14em;
+  text-shadow:
+    4px 4px 0 #6b4a2a,
+    0 0 18px rgba(255, 200, 120, 0.35);
+}
+.intro .card .s {
+  margin-top: 8px;
+  font-size: clamp(18px, 2vw, 26px);
+  color: var(--phos);
+  letter-spacing: 0.24em;
+  text-shadow: 0 0 6px rgba(120, 255, 140, 0.35);
+}
+.intro .cap,
+.intro .hint {
+  position: absolute;
+  bottom: calc(4.5vh - 10px);
+  font-size: 18px;
+  line-height: 20px;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.4s;
+}
+.intro .cap {
+  left: 22px;
+  right: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--phos-dim);
+}
+.intro .hint {
+  right: 22px;
+  color: rgba(242, 226, 184, 0.6);
+}
+.intro.on .cap,
+.intro.on .hint {
+  opacity: 1;
+  transition-delay: 0.6s;
+}

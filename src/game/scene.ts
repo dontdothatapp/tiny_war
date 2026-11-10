@@ -76,6 +76,8 @@ export class SceneRig {
   readonly sunDir = new THREE.Vector3(-0.5, 0.85, 0.35).normalize();
   pixelScale = 2; // 1 = native, 2/3 = chunky retro pixels
   private sunOffset = new THREE.Vector3();
+  /** Half-width of the area the shadow map covers. */
+  private shadowHalf = 200;
 
   constructor(private container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
@@ -136,7 +138,7 @@ export class SceneRig {
     this.sun.color.setHex(a.sun);
     this.sun.intensity = a.sunIntensity;
     this.sunDir.set(...a.sunDir).normalize();
-    this.sunOffset.copy(this.sunDir).multiplyScalar(320);
+    this.sunOffset.copy(this.sunDir).multiplyScalar(this.shadowHalf * 1.6);
     this.hemi.color.setHex(a.hemiSky);
     this.hemi.groundColor.setHex(a.hemiGround);
     this.hemi.intensity = a.hemiIntensity;
@@ -154,11 +156,37 @@ export class SceneRig {
     voxelGlobals.uGlow.value = a.glow;
   }
 
-  /** Fog is measured from the camera's focus distance so zooming doesn't change the haze. */
-  setFocusDistance(dist: number) {
+  /**
+   * Fog is measured from the camera's focus distance so zooming doesn't change the haze.
+   * `clear` pushes it further back (the opening shot shows the whole board unfogged).
+   */
+  setFocusDistance(dist: number, clear = 0) {
     const fog = this.scene.fog as THREE.Fog;
-    fog.near = dist + this.atmosphere.fogNear;
-    fog.far = dist + this.atmosphere.fogFar;
+    fog.near = dist + this.atmosphere.fogNear + clear;
+    fog.far = dist + this.atmosphere.fogFar + clear * 4;
+  }
+
+  /** Camera clip planes (the opening shot needs to see much further than the game camera). */
+  setDepthRange(near: number, far: number) {
+    const cam = this.camera;
+    if (cam.near === near && cam.far === far) return;
+    cam.near = near;
+    cam.far = far;
+    cam.updateProjectionMatrix();
+  }
+
+  /** Size of the square around the focus that gets shadows (the game uses 200). */
+  setShadowRange(half: number) {
+    if (half === this.shadowHalf) return;
+    this.shadowHalf = half;
+    const sc = this.sun.shadow.camera;
+    sc.left = -half;
+    sc.right = half;
+    sc.top = half;
+    sc.bottom = -half;
+    sc.far = half * 3.8;
+    sc.updateProjectionMatrix();
+    this.sunOffset.copy(this.sunDir).multiplyScalar(half * 1.6);
   }
 
   /** Red edge pulse (0..1) and white blast flash (0..1). */
@@ -188,7 +216,7 @@ export class SceneRig {
   /** Keep the shadow frustum centred on what the camera sees. */
   updateSun(focus: THREE.Vector3) {
     // snap to texel grid to avoid shimmering
-    const texel = 400 / 2048;
+    const texel = (this.shadowHalf * 2) / 2048;
     const fx = Math.round(focus.x / texel) * texel;
     const fz = Math.round(focus.z / texel) * texel;
     this.sun.position.set(fx + this.sunOffset.x, focus.y + this.sunOffset.y, fz + this.sunOffset.z);

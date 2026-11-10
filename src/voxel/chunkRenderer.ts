@@ -20,6 +20,14 @@ export class ChunkRenderer {
     this.group.name = 'chunks';
   }
 
+  /** Whether a chunk column lies inside the streaming radius around a focus point. */
+  static inRange(cx: number, cz: number, fx: number, fz: number, radius: number): boolean {
+    const r = radius / CS;
+    const dx = cx + 0.5 - fx / CS;
+    const dz = cz + 0.5 - fz / CS;
+    return dx * dx + dz * dz <= r * r;
+  }
+
   /** Synchronously mesh everything around a point (used during loading). */
   prime(fx: number, fz: number, radius = this.viewRadius) {
     this.update(fx, fz, Infinity, radius);
@@ -71,6 +79,17 @@ export class ChunkRenderer {
         this.meshes.delete(c);
         c.dirty = true; // needs a rebuild when we come back
       }
+    }
+  }
+
+  /** Drop every mesh outside the radius. update() keeps a margin of two chunks; this is exact. */
+  trim(fx: number, fz: number, radius: number) {
+    for (const [c, mesh] of this.meshes) {
+      if (ChunkRenderer.inRange(c.cx, c.cz, fx, fz, radius)) continue;
+      this.group.remove(mesh);
+      mesh.geometry.dispose();
+      this.meshes.delete(c);
+      c.dirty = true;
     }
   }
 
