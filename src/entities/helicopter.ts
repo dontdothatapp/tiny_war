@@ -28,13 +28,31 @@ export interface RotorStrike {
 const EMPTY_MASS = 62;
 const REF_MASS = 85;
 
+// ---- handling (assists on)
+/** Attitude spring and damper: about 0.4 s to reach a commanded tilt, no overshoot. */
+const ATT_STIFF = 80;
+const ATT_DAMP = 16.5;
+/** Horizontal drag: quadratic and linear coefficients on air speed. */
+const DRAG_QUAD = 0.0034;
+const DRAG_LIN = 0.07;
+/** Tilt (rad) the SAS applies per unit of ground speed it is cancelling. */
+const HOLD_GAIN = 0.1;
+/** Share of max tilt the SAS uses to brake when the stick is released (opposite stick brakes harder). */
+const BRAKE_TILT = 0.8;
+/** Pedal turn rate (rad/s) in the hover and at cruise speed. */
+const YAW_RATE_HOVER = 1.6;
+const YAW_RATE_CRUISE = 0.9;
+/** Side force per unit of forward speed x sideslip speed. */
+const KEEL = 0.02;
+
 /**
  * Simulation-leaning flight model:
  *  - thrust along the rotor axis, attitude via cyclic, heading via pedals
- *  - inertia + quadratic drag, wind, weathervaning tail (coordinated turns emerge)
+ *  - inertia + quadratic drag, wind, fuselage side force (the track follows the nose at speed)
  *  - ground effect, translational lift, vortex-ring state, rotor RPM / autorotation
  *  - weight from fuel, ammo and passengers
- * Assists (SAS): attitude hold, heading hold and vertical-speed hold.
+ * Assists (SAS): attitude hold, hover hold on a centred stick, turn coordination,
+ * heading hold and vertical-speed hold. With assists off the controls are raw.
  */
 export class Helicopter {
   readonly visual: HeliVisual;
@@ -141,11 +159,30 @@ export class Helicopter {
 
     // ---- attitude
     const crash = this.crashed;
+    // ground-relative velocity in the body frame (what the pilot sees: track over the ground)
+    const gFwd = this.vel.dot(fwd);
+    const gRight = this.vel.dot(rgt);
     if (this.assists && !crash) {
-      const tP = -c.pitch * st.maxTilt;
-      const tR = c.roll * st.maxTilt;
-      this.pitchRate += (18 * (tP - this.pitch) - 7.5 * this.pitchRate) * dt;
-      this.rollRate += (18 * (tR - this.roll) - 7.5 * this.rollRate) * dt;
+      // The stick commands tilt. An axis left centred is flown by the SAS instead, which
+      // tilts against the ground speed on that axis: let go and the aircraft flares to a
+      // hover, sideslip is banked away so the track follows the nose, and wind is held.
+      // The hold fades out as the stick moves, so on an analog stick a small deflection
+      // is a slow, precise creep and full deflection is the raw tilt.
+      const hold = this.onGround ? 0 : 1;
+      const holdP = hold * (1 - Math.abs(c.pitch)) ** 2;
+      const holdR = hold * (1 - Math.abs(c.roll)) ** 2;
+      // lean into the wind by the amount that cancels its push in a hover
+      const windF = this.wind.dot(fwd);
+      const windR = this.wind.dot(rgt);
+      const windPush = (DRAG_QUAD * this.wind.length() + DRAG_LIN) / G;
+      const trimP = windPush * windF;
+      const trimR = -(windPush + (KEEL * Math.abs(windF)) / G) * windR;
+      const brakeP = clamp(HOLD_GAIN * gFwd + trimP, -BRAKE_TILT * st.maxTilt, BRAKE_TILT * st.maxTilt);
+      const brakeR = clamp(-HOLD_GAIN * gRight + trimR, -st.maxTilt, st.maxTilt);
+      const tP = clamp(-c.pitch * st.maxTilt + holdP * brakeP, -st.maxTilt, st.maxTilt);
+      const tR = clamp(c.roll * st.maxTilt + holdR * brakeR, -st.maxTilt, st.maxTilt);
+      this.pitchRate += (ATT_STIFF * (tP - this.pitch) - ATT_DAMP * this.pitchRate) * dt;
+      this.rollRate += (ATT_STIFF * (tR - this.roll) - ATT_DAMP * this.rollRate) * dt;
     } else if (!crash) {
       // rate command, weak natural damping, no auto-level
       this.pitchRate += (-c.pitch * 2.6 - 1.2 * this.pitchRate) * dt;
@@ -156,13 +193,26 @@ export class Helicopter {
     this.pitch = clamp(this.pitch + this.pitchRate * dt, -0.9, 0.9);
     this.roll = clamp(this.roll + this.rollRate * dt, -0.9, 0.9);
 
-    // heading: pedals + weathervane + (assist) heading hold
+    // heading
     const vFwd = airVel.dot(fwd);
     const vRight = airVel.dot(rgt);
-    const wv = vFwd > 4 ? -0.018 * vRight * clamp(vFwd / 25, 0, 1.4) : 0;
-    let yawAcc = -c.yaw * 3.2 + wv * 6;
-    if (this.assists && !crash) yawAcc -= 3.0 * this.yawRate * (c.yaw === 0 ? 1.4 : 0.5);
-    else yawAcc -= 0.7 * this.yawRate;
+    let yawAcc: number;
+    if (this.assists && !crash) {
+      // Pedals command a turn rate and the heading holds when they are released. Pedal
+      // authority fades with speed (the fin stiffens). A banked turn at speed brings the
+      // nose round with it: at the coordinated rate up to medium speed, and a little ahead
+      // of it when fast, so a full-speed turn doesn't take the whole map.
+      const fast = clamp(Math.abs(gFwd) / 40, 0, 1);
+      const coord = clamp((gFwd - 6) / 10, 0, 1);
+      const bankTurn = (G * Math.tan(c.roll * st.maxTilt)) / clamp(gFwd, 12, 22);
+      const target = -c.yaw * lerp(YAW_RATE_HOVER, YAW_RATE_CRUISE, fast) - coord * bankTurn;
+      // ease into a turn so a tap is a small correction, stop firmly when the pedal is released
+      yawAcc = (c.yaw !== 0 ? 5 : 12) * (target - this.yawRate);
+    } else {
+      // raw pedals with a weathervaning tail
+      const wv = vFwd > 4 ? -0.018 * vRight * clamp(vFwd / 25, 0, 1.4) : 0;
+      yawAcc = -c.yaw * 3.2 + wv * 6 - 0.7 * this.yawRate;
+    }
     // torque reaction when the anti-torque system is lost
     if (crash) yawAcc += 4.5;
     this.yawRate = clamp(this.yawRate + yawAcc * dt, -3.5, 3.5);
@@ -188,11 +238,15 @@ export class Helicopter {
     if (this.assists && !crash && this.engineOn) {
       const hover = (m * G) / (this.maxThrust * Math.max(0.2, eff) * Math.max(0.5, up.y));
       let targetVs = c.collective * 16;
-      // auto-flare: the assist won't let you fly into the ground faster than a firm landing
-      if (targetVs < 0) targetVs = Math.max(targetVs, -(2.5 + this.agl * 0.7));
+      if (targetVs < 0) {
+        // the assist keeps a slow descent out of vortex ring state...
+        targetVs = Math.max(targetVs, -lerp(9.5, 16, clamp(speedH / 14, 0, 1)));
+        // ...and auto-flares: it won't let you fly into the ground faster than a firm landing
+        targetVs = Math.max(targetVs, -(2.5 + this.agl * 0.7));
+      }
       const vsErr = targetVs - this.vel.y;
-      const want = clamp(hover + vsErr * 0.06, 0, 1);
-      this.collective = lerp(this.collective, want, 1 - Math.exp(-6 * dt));
+      const want = clamp(hover + vsErr * 0.11, 0, 1);
+      this.collective = lerp(this.collective, want, 1 - Math.exp(-9 * dt));
       if (this.onGround && c.collective <= 0) this.collective = Math.min(this.collective, hover * 0.85);
     } else {
       this.collective = clamp(this.collective + c.collective * 0.55 * dt, 0, 1);
@@ -203,11 +257,15 @@ export class Helicopter {
     const acc = new THREE.Vector3().copy(up).multiplyScalar(thrust / m);
     acc.y -= G;
     // drag on air-relative velocity
-    const cH = 0.0034;
     const cV = 0.02;
-    acc.x -= cH * speedH * airVel.x + 0.05 * airVel.x;
-    acc.z -= cH * speedH * airVel.z + 0.05 * airVel.z;
+    acc.x -= (DRAG_QUAD * speedH + DRAG_LIN) * airVel.x;
+    acc.z -= (DRAG_QUAD * speedH + DRAG_LIN) * airVel.z;
     acc.y -= cV * Math.abs(airVel.y) * airVel.y + 0.15 * airVel.y;
+    // fuselage and fin side force: flying forward, the airframe resists sliding sideways,
+    // so the flight path swings round after the nose instead of skating on
+    const side = -KEEL * Math.abs(vFwd) * vRight;
+    acc.x += rgt.x * side;
+    acc.z += rgt.z * side;
     // VRS buffet
     if (this.vrs > 0.2) {
       acc.x += (Math.random() - 0.5) * 18 * this.vrs;
