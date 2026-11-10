@@ -12,17 +12,10 @@ function pickupModel(type: PickupType): VoxModel {
   // pallet
   m.box(0, 0, 0, 9, 0, 9, (x) => (x % 3 === 0 ? M.WOOD_DOOR : M.CRATE));
   if (type === 'fuel') {
-    // four drums with rims, a yellow band and bungs on top
-    for (const [x, z] of [
-      [2.5, 2.5],
-      [7, 2.5],
-      [2.5, 7],
-      [7, 7],
-    ]) {
-      m.cylinder(x, z, 2, 1, 6, (_x, y) => (y === 1 || y === 6 ? M.METAL_DARK : y === 4 ? M.YELLOW_MARK : M.RED_MARK));
-      m.cylinder(x, z, 1.4, 7, 7, M.RED_MARK);
-      m.set(x - 0.5, 7, z - 0.5, M.METAL_DARK);
-    }
+    // one big drum with rims, a yellow band and a bung on top
+    m.cylinder(4.5, 4.5, 4, 1, 6, (_x, y) => (y === 1 || y === 6 ? M.METAL_DARK : y === 3 || y === 4 ? M.YELLOW_MARK : M.RED_MARK));
+    m.cylinder(4.5, 4.5, 3.2, 7, 7, M.RED_MARK);
+    m.box(4, 7, 4, 5, 7, 5, M.METAL_DARK);
   } else if (type === 'ammo') {
     // olive ammunition crate with lid seam, stencil band and rope handles, small box on top
     m.box(0, 1, 1, 9, 4, 8, M.OLIVE_DARK);
@@ -46,7 +39,9 @@ function pickupModel(type: PickupType): VoxModel {
   return m;
 }
 
-export const PICKUP_COLOR: Record<PickupType, string> = { fuel: '#ff6a3a', ammo: '#e8d24a', repair: '#6bff8a' };
+/** Supplies are one colour everywhere (HUD, map, markers); the label says which kind. */
+const SUPPLY = '#ffd95a';
+export const PICKUP_COLOR: Record<PickupType, string> = { fuel: SUPPLY, ammo: SUPPLY, repair: SUPPLY };
 export const PICKUP_LABEL: Record<PickupType, string> = { fuel: 'FUEL', ammo: 'AMMO', repair: 'REPAIR' };
 
 export class Pickup {
@@ -65,7 +60,7 @@ export class Pickup {
   }
 }
 
-/** A downed crew waiting for pickup: smoke flare + strobe. No figures are shown. */
+/** A downed crew waiting for pickup: violet smoke + strobe. No figures are shown. */
 export class RescueSite {
   readonly beacon: THREE.Mesh;
   crew: number;
@@ -79,7 +74,7 @@ export class RescueSite {
   ) {
     this.crew = crew;
     this.total = crew;
-    this.beacon = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.8), new THREE.MeshBasicMaterial({ color: 0xff4020 }));
+    this.beacon = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.8), new THREE.MeshBasicMaterial({ color: 0xd9a8ff }));
     this.beacon.position.copy(pos).add(new THREE.Vector3(0, 1.2, 0));
   }
   get done() {

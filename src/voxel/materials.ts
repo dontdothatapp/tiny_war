@@ -92,6 +92,9 @@ export const M = {
   CANVAS_DARK: 67,
   HELI_DARK: 68,
   SOOT: 69,
+  FIELD_GREEN: 70,
+  FIELD_DARK: 71,
+  FIELD_SOIL: 72,
 } as const;
 
 const defs: Record<number, MaterialDef> = {
@@ -164,6 +167,10 @@ const defs: Record<number, MaterialDef> = {
   [M.CANVAS_DARK]: { name: 'canvas_dark', color: 0x6c6844, hardness: 0.6, noise: 0.1, flammable: true },
   [M.HELI_DARK]: { name: 'heli_dark', color: 0x383b23, hardness: 5, noise: 0.06 },
   [M.SOOT]: { name: 'soot', color: 0x1f1c1a, hardness: 3, noise: 0.2 },
+  // farmland: crop rows and tilled earth (painted on the ground around towns and along the river)
+  [M.FIELD_GREEN]: { name: 'field_green', color: 0x8fa64c, hardness: 0.8, noise: 0.16, terrain: true },
+  [M.FIELD_DARK]: { name: 'field_dark', color: 0x66803a, hardness: 0.8, noise: 0.18, terrain: true },
+  [M.FIELD_SOIL]: { name: 'field_soil', color: 0xa07c52, hardness: 1.0, noise: 0.16, terrain: true },
 };
 
 export const MATERIALS: MaterialDef[] = [];

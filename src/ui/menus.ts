@@ -190,7 +190,7 @@ export class Menus {
        <div class="cond"><b>${b.conditions}</b>${b.conditionsNote ? ` · ${b.conditionsNote}` : ''}</div>
        <div class="cols">
         <div><div class="t">PRIMARY</div>${b.objectives.map((o) => `<div>□ ${o}</div>`).join('')}</div>
-        <div><div class="t">SECONDARY</div><div>□ Rescue ${b.rescues} downed crews (red smoke)</div>${b.convoy ? `<div>□ Stop the supply convoy (${b.convoy} vehicles on the highway)</div>` : ''}<div>□ Winch supply crates</div>
+        <div><div class="t">SECONDARY</div><div>□ Rescue ${b.rescues} downed crews (violet smoke)</div>${b.convoy ? `<div>□ Stop the supply convoy (${b.convoy} vehicles on the highway)</div>` : ''}<div>□ Winch supply crates</div>
         <div class="t" style="margin-top:12px">THREATS</div>${b.threats.map((t) => `<div>▲ ${t}</div>`).join('')}</div>
        </div>
        <div class="dim">Credits are carried until you land on the FARP pad. Lose the aircraft and you lose what you carry. Kills in quick succession build a streak worth up to ×2 credits.</div>

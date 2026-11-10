@@ -1,12 +1,23 @@
 import { RNG, clamp, fbm, lerp, smoothstep, valueNoise } from '../core/rng';
 import { M, MAT_B, MAT_G, MAT_R } from '../voxel/materials';
 import { CS, Chunk, ChunkFiller, vidx } from '../voxel/world';
-import type { BaseDef, BaseKind, FarpDef, MapData, ObjectiveRef, PickupSpawn, RescueSpawn, RoadSeg, Stamp, StructureDef, Team, TurretSpawn, TurretType } from './mapTypes';
+import type { BaseDef, BaseKind, FarpDef, MapData, ObjectiveRef, PickupSpawn, PickupType, PlaceDef, RescueSpawn, RoadSeg, Stamp, StructureDef, Team, TurretSpawn, TurretType } from './mapTypes';
 import * as P from './prefabs';
 import { FORCE_AIR, VoxModel } from './voxModel';
 
 export const WORLD_HEIGHT = 64;
 const OCC = 4; // occupancy grid cell size
+/** Highest natural ground (mesa tops). The plains sit at about 10-20. */
+const MAX_GROUND = 34;
+/** The terrain eases down to this level along the sector border, where the open-desert skirt takes over. */
+export const EDGE_LEVEL = 10;
+const EDGE_FADE = 64;
+/** Nothing hostile (emplacements, checkpoints, guarded sites) is generated this close to the FARP. */
+export const SAFE_RADIUS = 260;
+/** Supplies keep at least this far from each other, and from the FARP (which rearms you anyway). */
+const SUPPLY_GAP = 150;
+const SUPPLY_FARP_GAP = 190;
+const PLACE_NAMES = ['AL-QASR', 'TARIF', 'UMM SAHAB', 'BIR HAKIM', 'SIDRA', 'KHARGA', 'ZAHRA', 'MAZRA', 'QARA', 'RAS AL-AIN', 'DARB', 'HAMRA', 'WADI NUR', 'SABKHA', 'TELL ASWAD', 'JABAL', 'NAKHL', 'MARSA', 'AIN DALLA', 'BAHARIYA'];
 
 const CODENAMES = ['KESTREL', 'VIPER', 'ANVIL', 'SCORPION', 'MIRAGE', 'COBALT', 'JACKAL', 'GRANITE', 'FALCON', 'TALON', 'EMBER', 'ONYX', 'SABLE', 'DUNE', 'RAPTOR', 'HAVOC', 'IRONSIDE', 'BASILISK'];
 const KIND_LABEL: Record<BaseKind, string> = {
@@ -26,8 +37,8 @@ interface Site {
 }
 
 export function sectorSize(sector: number): number {
-  // short first sorties, growing theatres later
-  return Math.min(2048, 640 + sector * 128);
+  // a first theatre of 1024, growing by 128 a sector
+  return Math.min(2048, 896 + sector * 128);
 }
 
 /**
@@ -42,6 +53,7 @@ export class MapGenerator implements ChunkFiller {
   private hf: Float32Array;
   private rockMask: Uint8Array;
   private occ: Uint8Array;
+  /** what the map draws over the ground in each occupancy cell: 1 = building, 2 = tree */
   private bigOcc: Uint8Array;
   private occN: number;
   readonly stamps: Stamp[] = [];
@@ -53,8 +65,11 @@ export class MapGenerator implements ChunkFiller {
   readonly rescues: RescueSpawn[] = [];
   readonly bases: BaseDef[] = [];
   readonly roads: RoadSeg[] = [];
+  readonly places: PlaceDef[] = [];
   farp!: FarpDef;
   private sites: Site[] = [];
+  /** river course with the half-width of the water at each point */
+  private river: { x: number; z: number; w: number }[] = [];
 
   constructor(
     readonly seed: number,
@@ -77,8 +92,10 @@ export class MapGenerator implements ChunkFiller {
   generate(): MapData {
     this.baseTerrain();
     this.placeSites();
+    this.planRiver();
     this.buildRoads();
     this.finalizeHeights();
+    this.paintFields();
     this.populateFarp();
     for (const s of this.sites) {
       if (s.kind === 'base') this.populateBase(s);
@@ -88,6 +105,7 @@ export class MapGenerator implements ChunkFiller {
     }
     this.populateRoadside();
     this.scatter();
+    this.placeSupplies();
     const mm = this.buildMinimap();
     return {
       seed: this.seed,
@@ -104,6 +122,8 @@ export class MapGenerator implements ChunkFiller {
       bases: this.bases,
       farp: this.farp,
       roads: this.roads,
+      places: this.places,
+      river: this.river.map((p) => ({ x: p.x, z: p.z })),
       minimap: mm.img,
       minimapRes: mm.res,
     };
@@ -122,17 +142,26 @@ export class MapGenerator implements ChunkFiller {
         // dunes: stretched noise across wind direction
         const u = (x * ca + z * sa) * 0.022;
         const v = (-x * sa + z * ca) * 0.006;
-        const dune = Math.pow(fbm(u, v, sd, 3), 1.6) * 7;
-        const big = fbm(x * 0.0035, z * 0.0035, sd + 17, 3) * 8;
+        const dune = Math.pow(fbm(u, v, sd, 3), 1.6) * 6;
+        const big = fbm(x * 0.0035, z * 0.0035, sd + 17, 3) * 6;
         let h = 9 + dune + big;
-        // mesas / rocky outcrops
+        // mesas / rocky outcrops: low enough to hop over, high enough to hide behind
         const mesa = fbm(x * 0.006, z * 0.006, sd + 51, 4);
+        let rock = false;
         if (mesa > 0.64) {
           const t = smoothstep(0.64, 0.69, mesa);
           const terr = Math.floor((mesa - 0.64) * 160) % 4 === 0 ? 0 : 1;
-          h += t * (10 + (mesa - 0.64) * 120) + terr * t;
-          if (t > 0.3) this.rockMask[x + z * S] = 1;
+          h += t * (7 + (mesa - 0.64) * 70) + terr * t;
+          rock = t > 0.3;
         }
+        // ease down to a flat border so the land runs on into the open desert around the sector
+        const e = Math.min(x, z, S - 1 - x, S - 1 - z);
+        if (e < EDGE_FADE) {
+          const k = smoothstep(0, EDGE_FADE, e);
+          h = lerp(EDGE_LEVEL, h, k);
+          if (k < 0.7) rock = false;
+        }
+        if (rock) this.rockMask[x + z * S] = 1;
         this.hf[x + z * S] = h;
       }
   }
@@ -140,13 +169,13 @@ export class MapGenerator implements ChunkFiller {
   private placeSites() {
     const S = this.S;
     const r = this.rng;
-    const margin = 90;
+    const margin = 130;
     const far = (x: number, z: number, d: number) => this.sites.every((s) => Math.hypot(s.x - x, s.z - z) > d + s.r);
     const hAt = (x: number, z: number) => this.hf[Math.floor(x) + Math.floor(z) * S];
 
-    // FARP near the south edge
-    const fx = r.range(S * 0.2, S * 0.8);
-    const fz = S - 110;
+    // FARP in the south, well inside the border
+    const fx = r.range(S * 0.28, S * 0.72);
+    const fz = S - 230;
     this.sites.push({ x: fx, z: fz, r: 60, h: Math.round(hAt(fx, fz)), kind: 'farp' });
 
     const tryPlace = (kind: Site['kind'], rad: number, minDist: number, minFarp: number, tries = 400): Site | null => {
@@ -162,17 +191,68 @@ export class MapGenerator implements ChunkFiller {
       return null;
     };
 
+    // Distances from the FARP (centre to centre). The sortie starts with a flight out: nothing
+    // to shoot at or pick up is in sight of the pad, and the first objective is a real trip away.
+    const baseMin = Math.max(400, S * 0.4);
+    const rescueMin = Math.max(320, S * 0.32);
     // 1 base in sector 1, then +1 every two sectors (max 5)
     const nBases = Math.min(5, 1 + Math.floor(this.sector / 2));
-    for (let i = 0; i < nBases; i++) tryPlace('base', r.range(52, 64), 110, 300 + i * 20);
+    for (let i = 0; i < nBases; i++) tryPlace('base', r.range(52, 64), 110, baseMin + i * 20);
     const nTowns = 2 + Math.floor(S / 512);
-    for (let i = 0; i < nTowns; i++) tryPlace('town', r.range(55, 80), 70, 160);
-    const nOasis = r.int(2, 4);
-    for (let i = 0; i < nOasis; i++) tryPlace('oasis', r.range(22, 34), 40, 120);
+    for (let i = 0; i < nTowns; i++) tryPlace('town', r.range(55, 80), 70, SAFE_RADIUS + 40);
+    const nOasis = r.int(2, 4) + Math.floor(S / 1024);
+    for (let i = 0; i < nOasis; i++) tryPlace('oasis', r.range(22, 34), 40, 190);
     const nRescue = Math.min(4, 1 + Math.floor((this.sector - 1) / 2));
-    for (let i = 0; i < nRescue; i++) tryPlace('rescue', 18, 50, 220);
+    for (let i = 0; i < nRescue; i++) tryPlace('rescue', 18, 50, rescueMin);
     // keep flattened sites at a sane level
-    for (const s of this.sites) s.h = clamp(s.h, 9, 22);
+    for (const s of this.sites) s.h = clamp(s.h, 9, 16);
+    // towns get names (shown on the map)
+    const names = r.shuffle(PLACE_NAMES.slice());
+    for (const s of this.sites) if (s.kind === 'town') this.places.push({ name: names[this.places.length % names.length], kind: 'town', x: s.x, z: s.z, r: s.r });
+  }
+
+  private farpDist(x: number, z: number): number {
+    const f = this.sites[0];
+    return Math.hypot(x - f.x, z - f.z);
+  }
+
+  /**
+   * A river (a wadi with water in it) from one edge of the sector to the other. Out of a
+   * few random courses it takes the one that stays furthest from the compounds; a sector
+   * where none fits, or one in five anyway, is dry.
+   */
+  private planRiver() {
+    const S = this.S;
+    const r = this.rng;
+    if (!r.chance(0.8)) return;
+    const compounds = this.sites.filter((s) => s.kind === 'farp' || s.kind === 'base' || s.kind === 'rescue');
+    let best: { x: number; z: number; w: number }[] | null = null;
+    let bestClear = -Infinity;
+    for (let k = 0; k < 24; k++) {
+      const eastWest = r.chance(0.6);
+      // an east-west river stays in the northern two thirds (the FARP is in the south)
+      const a0 = eastWest ? r.range(0.16, 0.62) : r.range(0.15, 0.85);
+      const a1 = eastWest ? r.range(0.16, 0.62) : r.range(0.15, 0.85);
+      const amp = r.range(50, 120);
+      const ph = r.range(0, 100);
+      const n = Math.ceil((S + 80) / 36);
+      const pts: { x: number; z: number; w: number }[] = [];
+      for (let i = 0; i <= n; i++) {
+        const t = i / n;
+        const along = -40 + (S + 80) * t;
+        const across = S * lerp(a0, a1, t) + (fbm(t * 5 + ph, k * 7.3, this.seed + 77, 3) - 0.5) * 2 * amp;
+        const w = 3 + valueNoise(i * 0.35, ph, this.seed + 78) * 2.5;
+        pts.push(eastWest ? { x: along, z: across, w } : { x: across, z: along, w });
+      }
+      let clear = Infinity;
+      for (const s of compounds) for (const p of pts) clear = Math.min(clear, Math.hypot(p.x - s.x, p.z - s.z) - s.r);
+      if (clear > bestClear) {
+        bestClear = clear;
+        best = pts;
+      }
+      if (clear > 70) break;
+    }
+    if (best && bestClear > 45) this.river = best;
   }
 
   private buildRoads() {
@@ -200,11 +280,73 @@ export class MapGenerator implements ChunkFiller {
       edges.push([nodes[bi], nodes[bj]]);
     }
     for (const [a, b] of edges) this.roads.push({ ax: a.x, az: a.z, bx: b.x, bz: b.z, w: 5 });
-    // a highway crossing the whole map
-    const t0 = r.range(0.2, 0.8),
-      t1 = r.range(0.2, 0.8);
-    if (r.chance(0.5)) this.roads.push({ ax: -10, az: S * t0, bx: S + 10, bz: S * t1, w: 6 });
-    else this.roads.push({ ax: S * t0, az: -10, bx: S * t1, bz: S + 10, w: 6 });
+    // a highway crossing the whole map, out of sight of the FARP (the convoy drives it)
+    const farp = this.sites[0];
+    for (let k = 0; k < 30; k++) {
+      const t0 = r.range(0.2, 0.8),
+        t1 = r.range(0.2, 0.8);
+      const hw: RoadSeg = r.chance(0.5) ? { ax: -10, az: S * t0, bx: S + 10, bz: S * t1, w: 6 } : { ax: S * t0, az: -10, bx: S * t1, bz: S + 10, w: 6 };
+      if (k < 29 && segDist(farp.x, farp.z, hw.ax, hw.az, hw.bx, hw.bz) < SAFE_RADIUS) continue;
+      this.roads.push(hw);
+      break;
+    }
+  }
+
+  /**
+   * Cut the river into the height field: a shallow bed of water with green banks. Every
+   * cell takes its shape from the nearest point of the course, so bends join cleanly.
+   */
+  private carveRiver() {
+    const pts = this.river;
+    if (pts.length < 2) return;
+    const S = this.S;
+    const hf = this.hf;
+    // water level along the course: the smoothed terrain, kept down on the plain (it cuts a gorge through high ground)
+    const prof = pts.map((p) => hf[clamp(Math.floor(p.x), 0, S - 1) + clamp(Math.floor(p.z), 0, S - 1) * S]);
+    for (let pass = 0; pass < 10; pass++) for (let i = 1; i < prof.length - 1; i++) prof[i] = (prof[i - 1] + prof[i] * 2 + prof[i + 1]) / 4;
+    // two voxels deep, shallowing to nothing at the border, where it runs out flush onto the open desert
+    const depth = pts.map((p) => 2 * smoothstep(0, 60, Math.min(p.x, p.z, S - p.x, S - p.z)));
+    for (let i = 0; i < prof.length; i++) prof[i] = Math.min(prof[i], 15) - depth[i];
+    const reach = 26;
+    const near = new Map<number, { d: number; level: number; w: number; depth: number }>();
+    for (let k = 0; k < pts.length - 1; k++) {
+      const a = pts[k],
+        b = pts[k + 1];
+      const dx = b.x - a.x,
+        dz = b.z - a.z;
+      const l2 = dx * dx + dz * dz;
+      const minX = Math.max(0, Math.floor(Math.min(a.x, b.x) - reach)),
+        maxX = Math.min(S - 1, Math.ceil(Math.max(a.x, b.x) + reach));
+      const minZ = Math.max(0, Math.floor(Math.min(a.z, b.z) - reach)),
+        maxZ = Math.min(S - 1, Math.ceil(Math.max(a.z, b.z) + reach));
+      for (let z = minZ; z <= maxZ; z++)
+        for (let x = minX; x <= maxX; x++) {
+          const t = clamp(((x - a.x) * dx + (z - a.z) * dz) / l2, 0, 1);
+          const d = Math.hypot(x - (a.x + dx * t), z - (a.z + dz * t));
+          if (d > reach) continue;
+          const i = x + z * S;
+          const cur = near.get(i);
+          if (!cur || d < cur.d) near.set(i, { d, level: lerp(prof[k], prof[k + 1], t), w: lerp(a.w, b.w, t), depth: lerp(depth[k], depth[k + 1], t) });
+        }
+    }
+    const compounds = this.sites.filter((q) => q.kind === 'farp' || q.kind === 'base' || q.kind === 'rescue');
+    for (const [i, c] of near) {
+      const x = i % S,
+        z = (i - x) / S;
+      if (c.d > c.w + 20) continue;
+      if (compounds.some((q) => Math.hypot(x - q.x, z - q.z) < q.r + 10)) continue;
+      // bed at the water level, banks rising back to the plain, then blending into the land
+      const bank = c.level + c.depth * smoothstep(c.w, c.w + 9, c.d);
+      hf[i] = lerp(hf[i], bank, 1 - smoothstep(c.w + 8, c.w + 20, c.d));
+      if (c.d <= c.w) {
+        this.surface[i] = M.WATER;
+        this.rockMask[i] = 0;
+        this.occSet(x, z, 3);
+      } else if (c.d <= c.w + 4 + valueNoise(x * 0.15, z * 0.15, this.seed + 5) * 5) {
+        this.surface[i] = M.GREEN_GRASS;
+        this.rockMask[i] = 0;
+      }
+    }
   }
 
   private finalizeHeights() {
@@ -223,6 +365,7 @@ export class MapGenerator implements ChunkFiller {
           if (t > 0.5) this.rockMask[i] = 0;
         }
     }
+    this.carveRiver();
     // roads: smooth profile along each segment (no asphalt inside compounds)
     const compounds = this.sites.filter((q) => q.kind === 'base' || q.kind === 'farp');
     const inCompound = (x: number, z: number) => compounds.some((q) => Math.abs(x - q.x) < q.r * 0.85 && Math.abs(z - q.z) < q.r * 0.85);
@@ -239,7 +382,7 @@ export class MapGenerator implements ChunkFiller {
       // heavy smoothing + cap (roads go around mesas by cutting through)
       for (let pass = 0; pass < 6; pass++)
         for (let i = 1; i < n; i++) prof[i] = (prof[i - 1] + prof[i] * 2 + prof[i + 1]) / 4;
-      for (let i = 0; i <= n; i++) prof[i] = Math.min(prof[i], 20);
+      for (let i = 0; i <= n; i++) prof[i] = Math.min(prof[i], 18);
       const hw = rd.w;
       const blend = 10;
       const minX = Math.max(0, Math.floor(Math.min(rd.ax, rd.bx) - hw - blend));
@@ -280,11 +423,13 @@ export class MapGenerator implements ChunkFiller {
     for (let z = 0; z < S; z++)
       for (let x = 0; x < S; x++) {
         const i = x + z * S;
-        this.heights[i] = clamp(Math.round(hf[i]), 3, WORLD_HEIGHT - 20);
+        this.heights[i] = clamp(Math.round(hf[i]), 3, MAX_GROUND);
         if (this.surface[i]) continue;
         if (this.rockMask[i]) this.surface[i] = M.ROCK;
         else {
-          const patch = valueNoise(x * 0.03, z * 0.03, sd);
+          // dark patches thin out towards the border, which is plain sand like the desert beyond it
+          const e = Math.min(x, z, S - 1 - x, S - 1 - z);
+          const patch = valueNoise(x * 0.03, z * 0.03, sd) - (1 - smoothstep(0, 70, e)) * 0.4;
           this.surface[i] = patch > 0.68 ? M.SAND_DARK : M.SAND;
         }
       }
@@ -300,13 +445,13 @@ export class MapGenerator implements ChunkFiller {
     if (this.occ[i] < v) this.occ[i] = v;
   }
 
-  /** 0 = free, 1 = object, 2 = road */
+  /** 0 = free, 1 = object, 2 = road, 3 = water */
   private occFree(x0: number, z0: number, x1: number, z1: number, allowRoad = false): boolean {
     if (x0 < 4 || z0 < 4 || x1 >= this.S - 4 || z1 >= this.S - 4) return false;
     for (let z = Math.floor(z0 / OCC); z <= Math.floor(z1 / OCC); z++)
       for (let x = Math.floor(x0 / OCC); x <= Math.floor(x1 / OCC); x++) {
         const v = this.occ[x + z * this.occN];
-        if (v === 1 || (v === 2 && !allowRoad)) return false;
+        if (v === 1 || v === 3 || (v === 2 && !allowRoad)) return false;
       }
     return true;
   }
@@ -344,14 +489,27 @@ export class MapGenerator implements ChunkFiller {
     for (let cz = cz0; cz <= cz1; cz++) for (let cx = cx0; cx <= cx1; cx++) this.buckets[cx + cz * this.nb].push(idx);
     if (mark) for (let zz = z; zz < z + m.sz; zz += OCC) for (let xx = x; xx < x + m.sx; xx += OCC) this.occSet(xx, zz, 1);
     if (mark) this.occSet(x + m.sx - 1, z + m.sz - 1, 1);
-    // big footprints are drawn on the minimap
-    if (mark && m.sx * m.sz >= 100 && m.sy > 2)
-      for (let zz = z; zz < z + m.sz; zz += OCC)
-        for (let xx = x; xx < x + m.sx; xx += OCC) {
-          const ox = Math.floor(xx / OCC),
-            oz = Math.floor(zz / OCC);
-          if (ox >= 0 && oz >= 0 && ox < this.occN && oz < this.occN) this.bigOcc[ox + oz * this.occN] = 1;
-        }
+    // big footprints are drawn on the map: buildings as blocks, palms as a dot, rocks not at all
+    if (mark && m.sx * m.sz >= 100 && m.sy > 2) {
+      let tree = false,
+        built = false;
+      for (let i = 0; i < m.data.length && !tree; i++) {
+        const v = m.data[i];
+        if (v === M.PALM_LEAF || v === M.PALM_LEAF_DARK || v === M.PALM_DEAD) tree = true;
+        else if (v && v !== FORCE_AIR && v !== M.ROCK && v !== M.ROCK_DARK && v !== M.SHRUB) built = true;
+      }
+      if (tree) {
+        const ox = Math.floor((x + m.sx / 2) / OCC),
+          oz = Math.floor((z + m.sz / 2) / OCC);
+        if (ox >= 0 && oz >= 0 && ox < this.occN && oz < this.occN && !this.bigOcc[ox + oz * this.occN]) this.bigOcc[ox + oz * this.occN] = 2;
+      } else if (built)
+        for (let zz = z; zz < z + m.sz; zz += OCC)
+          for (let xx = x; xx < x + m.sx; xx += OCC) {
+            const ox = Math.floor(xx / OCC),
+              oz = Math.floor(zz / OCC);
+            if (ox >= 0 && oz >= 0 && ox < this.occN && oz < this.occN) this.bigOcc[ox + oz * this.occN] = 1;
+          }
+    }
     return { x0: x, y0: y, z0: z, x1: x + m.sx - 1, y1: y + m.sy - 1, z1: z + m.sz - 1 };
   }
 
@@ -479,9 +637,6 @@ export class MapGenerator implements ChunkFiller {
     // friendly guard tower
     this.stamp(P.guardTower(), s.x + 44, y, s.z - 26);
     this.farp = { x: s.x, y, z: s.z, padX: s.x, padZ: s.z, padR: 13, spawnYaw: Math.PI / 2 };
-    // a couple of supplies near home
-    this.pickups.push({ type: 'fuel', x: s.x - 24, y, z: s.z - 26 });
-    this.pickups.push({ type: 'ammo', x: s.x + 24, y, z: s.z - 26 });
   }
 
   private populateBase(s: Site) {
@@ -578,6 +733,7 @@ export class MapGenerator implements ChunkFiller {
 
     // supporting buildings
     const nb = r.int(2, 4);
+    let cache = false;
     for (let i = 0; i < nb; i++) {
       for (let k = 0; k < 20; k++) {
         const m = P.house(r, { floors: r.int(1, 2), military: true, mat: r.chance(0.5) ? wallMat : M.CONCRETE }).rotated(r.int(0, 3));
@@ -587,8 +743,8 @@ export class MapGenerator implements ChunkFiller {
         const bb = this.placeCentered(m, px, pz);
         if (bb) {
           const sid = this.addStructure(bb, 'barracks', 'Barracks', 'enemy', 30, { baseId: base.id, collapseAt: 0.65 });
-          // supplies hidden inside some buildings
-          if (r.chance(0.5)) this.pickups.push({ type: r.pick(['fuel', 'ammo', 'repair'] as const), x: (bb.x0 + bb.x1) / 2, y: bb.y0 + 1, z: (bb.z0 + bb.z1) / 2 });
+          // one supply cache hidden inside a building (reachable once the walls are gone)
+          if (!cache && r.chance(0.6)) cache = this.tryPickup((bb.x0 + bb.x1) / 2, (bb.z0 + bb.z1) / 2, { y: bb.y0 + 1, gap: 100 });
           void sid;
           break;
         }
@@ -653,6 +809,7 @@ export class MapGenerator implements ChunkFiller {
     const r = this.rng;
     const n = r.int(8, 18);
     let placed = 0;
+    let cache = false;
     for (let i = 0; i < n * 6 && placed < n; i++) {
       const a = r.range(0, Math.PI * 2);
       const d = Math.sqrt(r.next()) * s.r;
@@ -661,7 +818,8 @@ export class MapGenerator implements ChunkFiller {
       if (!bb) continue;
       placed++;
       this.addStructure(bb, 'house', 'Building', 'neutral', 0, { collapseAt: 0.65 });
-      if (r.chance(0.2)) this.pickups.push({ type: r.pick(['fuel', 'ammo', 'repair'] as const), x: bb.x1 + 3, y: this.groundAt(bb.x1 + 3, bb.z1 + 3), z: bb.z1 + 3 });
+      // a town has one supply cache at most, beside one of its buildings
+      if (!cache && r.chance(0.3)) cache = this.tryPickup(bb.x1 + 3, bb.z1 + 3);
     }
     // courtyard walls, palms, stalls, cars, water tower
     for (let i = 0; i < 10; i++) {
@@ -694,7 +852,7 @@ export class MapGenerator implements ChunkFiller {
       const a = r.range(0, Math.PI * 2);
       const tx = s.x + Math.cos(a) * (s.r + 12),
         tz = s.z + Math.sin(a) * (s.r + 12);
-      const bb = this.placeCentered(P.gunPit(4), tx, tz);
+      const bb = this.farpDist(tx, tz) > SAFE_RADIUS ? this.placeCentered(P.gunPit(4), tx, tz) : null;
       if (bb) this.addTurret('mg', tx, tz, -1, bb.y0 + 1);
     }
   }
@@ -723,7 +881,7 @@ export class MapGenerator implements ChunkFiller {
       const d = r.range(pr, s.r * 1.1);
       this.placeCentered(P.shrub(r), s.x + Math.cos(a) * d, s.z + Math.sin(a) * d);
     }
-    if (r.chance(0.6)) this.pickups.push({ type: 'repair', x: s.x + pr + 4, y, z: s.z });
+    if (r.chance(0.6)) this.tryPickup(s.x + pr + 4, s.z, { type: 'repair', y });
   }
 
   private populateRescue(s: Site) {
@@ -773,7 +931,7 @@ export class MapGenerator implements ChunkFiller {
         const px = rd.ax + ux * t,
           pz = rd.az + uz * t;
         if (this.sites.some((s) => Math.hypot(s.x - px, s.z - pz) < s.r + 40)) continue;
-        if (r.chance(0.55)) {
+        if (r.chance(0.55) && this.farpDist(px, pz) > SAFE_RADIUS) {
           // checkpoint: sandbag walls + MG nest beside the road
           const off = rd.w + 10;
           const tx = px + nx * off,
@@ -794,8 +952,28 @@ export class MapGenerator implements ChunkFiller {
     const r = this.rng;
     const S = this.S;
     const area = (S / 256) ** 2;
-    // shrubs
-    for (let i = 0; i < 65 * area; i++) this.placeCentered(P.shrub(r), r.range(8, S - 8), r.range(8, S - 8));
+    // shrubs grow in belts (low-frequency noise) instead of an even sprinkle
+    for (let i = 0; i < 130 * area; i++) {
+      const x = r.range(8, S - 8),
+        z = r.range(8, S - 8);
+      if (r.next() > 0.12 + smoothstep(0.42, 0.7, fbm(x * 0.007, z * 0.007, this.seed + 91, 2))) continue;
+      this.placeCentered(P.shrub(r), x, z);
+    }
+    // palms and scrub along the river banks
+    for (let k = 0; k < this.river.length - 1; k++) {
+      const a = this.river[k],
+        b = this.river[k + 1];
+      const len = Math.hypot(b.x - a.x, b.z - a.z);
+      const nx = -(b.z - a.z) / len,
+        nz = (b.x - a.x) / len;
+      for (let t = r.range(0, 8); t < len; t += r.range(6, 16)) {
+        const side = r.chance(0.5) ? 1 : -1;
+        const off = (lerp(a.w, b.w, t / len) + r.range(3, 13)) * side;
+        const px = a.x + ((b.x - a.x) * t) / len + nx * off,
+          pz = a.z + ((b.z - a.z) * t) / len + nz * off;
+        this.placeCentered(r.chance(0.4) ? P.palm(r) : P.shrub(r), px, pz, { maxSlope: 4 });
+      }
+    }
     // rocks
     for (let i = 0; i < 18 * area; i++) this.placeCentered(P.rock(r), r.range(8, S - 8), r.range(8, S - 8), { sink: 1 });
     // lone palms
@@ -805,12 +983,119 @@ export class MapGenerator implements ChunkFiller {
       const m = r.chance(0.5) ? P.ruin(r) : P.vehicle(r, r.pick(['tank', 'truck', 'apc'] as const), true);
       this.placeCentered(m.rotated(r.int(0, 3)), r.range(40, S - 40), r.range(40, S - 40), { maxSlope: 4, sink: 1 });
     }
-    // loose supply drops
-    for (let i = 0; i < 1.2 * area; i++) {
-      const x = r.range(60, S - 60),
-        z = r.range(60, S - 60);
-      if (!this.occFree(x - 4, z - 4, x + 4, z + 4)) continue;
-      this.pickups.push({ type: r.pick(['fuel', 'fuel', 'ammo', 'repair'] as const), x, y: this.groundAt(x, z), z });
+  }
+
+  // ------------------------------------------------------------------ farmland
+
+  /** Irrigated plots around the towns and along the river: crop rows painted on flat, empty ground. */
+  private paintFields() {
+    const r = this.rng;
+    const S = this.S;
+    const compounds = this.sites.filter((q) => q.kind === 'farp' || q.kind === 'base' || q.kind === 'rescue');
+    const plot = (cx: number, cz: number): boolean => {
+      const w = r.int(14, 30),
+        d = r.int(12, 24);
+      const x0 = Math.round(cx - w / 2),
+        z0 = Math.round(cz - d / 2);
+      if (!this.occFree(x0 - 2, z0 - 2, x0 + w + 1, z0 + d + 1)) return false;
+      if (compounds.some((q) => Math.hypot(cx - q.x, cz - q.z) < q.r + 40)) return false;
+      let mn = 999,
+        mx = 0;
+      for (let z = z0; z < z0 + d; z++)
+        for (let x = x0; x < x0 + w; x++) {
+          const i = x + z * S;
+          const m = this.surface[i];
+          if (m !== M.SAND && m !== M.SAND_DARK) return false;
+          const h = this.heights[i];
+          if (h < mn) mn = h;
+          if (h > mx) mx = h;
+        }
+      if (mx - mn > 2) return false;
+      const kind = r.int(0, 2);
+      const rowsX = r.chance(0.5);
+      for (let z = z0; z < z0 + d; z++)
+        for (let x = x0; x < x0 + w; x++) {
+          const edge = x === x0 || z === z0 || x === x0 + w - 1 || z === z0 + d - 1;
+          const furrow = (rowsX ? x : z) % 3 === 0;
+          let m: number;
+          if (edge) m = M.FIELD_SOIL;
+          else if (kind === 0) m = furrow ? M.FIELD_SOIL : M.FIELD_GREEN;
+          else if (kind === 1) m = furrow ? M.FIELD_SOIL : M.FIELD_DARK;
+          else m = furrow ? M.SAND_DARK : M.FIELD_SOIL;
+          this.surface[x + z * S] = m;
+        }
+      // keep buildings and props off the crops
+      for (let z = z0; z < z0 + d; z += OCC) for (let x = x0; x < x0 + w; x += OCC) this.occSet(x, z, 1);
+      this.occSet(x0 + w - 1, z0 + d - 1, 1);
+      return true;
+    };
+    for (const s of this.sites) {
+      if (s.kind !== 'town') continue;
+      const n = r.int(4, 8);
+      for (let i = 0, done = 0; i < n * 5 && done < n; i++) {
+        const a = r.range(0, Math.PI * 2);
+        const d = s.r * r.range(1.0, 1.7);
+        if (plot(s.x + Math.cos(a) * d, s.z + Math.sin(a) * d)) done++;
+      }
+    }
+    for (let k = 1; k < this.river.length - 1; k++) {
+      if (!r.chance(0.45)) continue;
+      const a = this.river[k],
+        b = this.river[k + 1];
+      const len = Math.hypot(b.x - a.x, b.z - a.z);
+      const side = r.chance(0.5) ? 1 : -1;
+      const off = (a.w + r.range(22, 40)) * side;
+      plot(a.x - ((b.z - a.z) / len) * off, a.z + ((b.x - a.x) / len) * off);
+    }
+  }
+
+  // ------------------------------------------------------------------ supplies
+
+  /**
+   * Add a supply crate, unless it would crowd another one or sit on the FARP's doorstep.
+   * With no type given it deals the rarest one so far, avoiding the type of any crate nearby.
+   */
+  private tryPickup(x: number, z: number, o: { type?: PickupType; y?: number; gap?: number } = {}): boolean {
+    const gap = o.gap ?? SUPPLY_GAP;
+    if (this.farpDist(x, z) < SUPPLY_FARP_GAP) return false;
+    if (this.pickups.some((p) => Math.hypot(p.x - x, p.z - z) < gap)) return false;
+    let type = o.type;
+    if (!type) {
+      const count: Record<PickupType, number> = { fuel: 0, ammo: 0, repair: 0 };
+      for (const p of this.pickups) count[p.type] += Math.hypot(p.x - x, p.z - z) < 320 ? 100 : 1;
+      const order = this.rng.shuffle<PickupType>(['fuel', 'ammo', 'repair']);
+      order.sort((a, b) => count[a] - count[b]);
+      type = order[0];
+    }
+    this.pickups.push({ type, x, y: o.y ?? this.groundAt(x, z), z });
+    return true;
+  }
+
+  /**
+   * Loose supply drops top the sector up to a fixed number of crates. The sector is split
+   * into a grid and each cell gets one at most, so they spread out instead of bunching.
+   */
+  private placeSupplies() {
+    const r = this.rng;
+    const S = this.S;
+    const want = Math.round(6 + S / 200);
+    const g = Math.max(2, Math.ceil(Math.sqrt(want * 1.6)));
+    const cell = (S - 160) / g;
+    const cells: [number, number][] = [];
+    for (let j = 0; j < g; j++) for (let i = 0; i < g; i++) cells.push([i, j]);
+    r.shuffle(cells);
+    const bases = this.sites.filter((s) => s.kind === 'base');
+    for (const [i, j] of cells) {
+      if (this.pickups.length >= want) break;
+      for (let k = 0; k < 8; k++) {
+        const x = 80 + (i + r.range(0.15, 0.85)) * cell,
+          z = 80 + (j + r.range(0.15, 0.85)) * cell;
+        if (bases.some((s) => Math.hypot(s.x - x, s.z - z) < s.r + 24)) continue;
+        if (!this.occFree(x - 5, z - 5, x + 5, z + 5)) continue;
+        const { mn, mx } = this.footprintHeights(Math.floor(x) - 3, Math.floor(z) - 3, 7, 7);
+        if (mx - mn > 2) continue;
+        if (this.tryPickup(x, z)) break;
+      }
     }
   }
 
@@ -818,7 +1103,7 @@ export class MapGenerator implements ChunkFiller {
 
   private buildMinimap() {
     const S = this.S;
-    const res = 256;
+    const res = Math.min(512, S / 2);
     const step = S / res;
     const img = new Uint8ClampedArray(res * res * 4);
     for (let j = 0; j < res; j++)
@@ -833,10 +1118,15 @@ export class MapGenerator implements ChunkFiller {
         let rr = MAT_R[m],
           gg = MAT_G[m],
           bb = MAT_B[m];
-        if (this.bigOcc[Math.floor(x / OCC) + Math.floor(z / OCC) * this.occN]) {
+        const big = this.bigOcc[Math.floor(x / OCC) + Math.floor(z / OCC) * this.occN];
+        if (big === 1) {
           rr = 236;
           gg = 226;
           bb = 205;
+        } else if (big === 2) {
+          rr = 92;
+          gg = 122;
+          bb = 52;
         }
         const p = (i + j * res) * 4;
         img[p] = rr * shade;
@@ -846,6 +1136,14 @@ export class MapGenerator implements ChunkFiller {
       }
     return { img, res };
   }
+}
+
+/** Distance from a point to a segment. */
+function segDist(px: number, pz: number, ax: number, az: number, bx: number, bz: number): number {
+  const dx = bx - ax,
+    dz = bz - az;
+  const t = clamp(((px - ax) * dx + (pz - az) * dz) / (dx * dx + dz * dz), 0, 1);
+  return Math.hypot(px - (ax + dx * t), pz - (az + dz * t));
 }
 
 export type { ObjectiveRef };

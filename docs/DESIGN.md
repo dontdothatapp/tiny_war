@@ -62,17 +62,19 @@ Thrust acts along the rotor axis, and the craft has mass, inertia and quadratic 
 - **MG nest / AA gun:** tracer bursts with a lead that tracks imperfectly. Accuracy drops with range.
 - **Flak:** shells with timed fuses that burst near you. They **can't engage targets below about 14 voxels AGL**.
 - **SAM:** a radar lock with a warning tone, then a guided missile with a limited turn rate. It **can't lock targets flying under about 12 AGL**. Flares decoy it.
-- **Tank:** a slow, heavy shell. It can't elevate high, so flying high counters it.
+- **Tank:** a slow, heavy shell. It can't elevate high, so flying high (38 or more above it) counters it.
 - Every emplacement needs **line of sight** through the voxel world, and takes a moment to react once it spots you. Buildings, mesas and dunes are real cover, and destroying cover changes the fight.
 
 Moving enemies (`src/entities/mobiles.ts`) are kinematic: they have no voxel physics, and the game applies damage, fires their shots and leaves their wrecks.
 
-- **Gunship:** a light scout helicopter (72 HP, 120 CR). It orbits a home point until the player comes within 320 voxels, then flies gun runs: it turns towards a lead point at up to 1.5 rad/s, fires 7-round bursts while the nose is within 10° and the line of fire is clear, breaks away to one side once inside 52 voxels, and comes around after about 2.4 s. It follows the terrain 30–72 voxels up and matches the player's altitude while fighting, which keeps it inside the cannon's elevation limits. When killed it spins down trailing smoke and explodes where it lands. It disengages when the player is within 150 voxels of the FARP pad, so landing to finish a sector is always possible.
+- **Gunship:** a light scout helicopter (72 HP, 120 CR). It orbits a home point until the player comes within 320 voxels, then flies gun runs: it turns towards a lead point at up to 1.5 rad/s, fires 7-round bursts while the nose is within 10° and the line of fire is clear, breaks away to one side once inside 52 voxels, and comes around after about 2.4 s. It follows the terrain 22–46 voxels up and matches the player's altitude while fighting, which keeps it inside the cannon's elevation limits. When killed it spins down trailing smoke and explodes where it lands. It disengages when the player is within 150 voxels of the FARP pad, so landing to finish a sector is always possible.
 - **Patrols and the chase home:** from sector 2, one to three gunships patrol over the bases. Destroying the last primary target scrambles one more (two from sector 4) from the map edge furthest from the FARP. These chase from any distance. A sortie used to end the moment the last target fell; now the flight home is a fight.
 - **Convoy:** three to six vehicles (trucks, with a technical or APC escort) drive the longest stretch of highway that stays clear of compounds. They set off 22 seconds into the sortie, or as soon as one is hit, at a speed that gives roughly 100 seconds before the lead vehicle leaves the sector. Trucks drop a supply crate; escorts fire bursts when they have line of sight. Anything left on the road (wrecks, rubble) is knocked aside as they reach it, and they sink into craters instead of floating over them. Killing all of them pays a 200 CR bonus.
 - **Tested numbers:** against a hovering, passive player a sector-1 gunship did about 3.4 armour per second before its damage was cut by a fifth; with the nose held on it, the cannon shot it down in under two seconds at its original 52 HP, so it now has 72.
 
 The altitude trade-off is deliberate. Flying low (nap-of-the-earth) beats flak and SAMs but exposes you to guns and tanks. Flying high does the opposite.
+
+The band you can fly in is narrow on purpose. The plains sit at 10–20, mesas top out at 34 and the tallest mast at about 60; the service ceiling is 68 (`CEILING` in `helicopter.ts`), so the most you can have under you over flat ground is about 25 m. That is enough to hop a mesa or get above a tank's elevation, and the ground never drops out of the picture. The HEIGHT readout on the dashboard has a notch at the radar floor and says UNDER RADAR below it.
 
 Player weapons:
 
@@ -104,7 +106,7 @@ Player weapons:
 
 `src/game/progression.ts`, `game.ts`
 
-- A **run** is a series of sectors with a random seed. The map grows from 768² in sector 1 to 2048². Sector 1 has one base (never a SAM battery) and one rescue site. Bases increase by one every two sectors, up to five. Threat types and enemy accuracy and damage scale with the sector.
+- A **run** is a series of sectors with a random seed. The map grows from 1024² in sector 1 to 2048² (128 a sector). Sector 1 has one base (never a SAM battery) and one rescue site. Bases increase by one every two sectors, up to five. Threat types and enemy accuracy and damage scale with the sector.
 - **Credits** come from destroying targets, neutralising bases, rescues and sector-clear bonuses. They are **carried** in the aircraft until you land on the FARP pad. If you die, you lose them. This creates a push-your-luck tension between going for one more target and heading home first.
 - **Level-ups (per run):** XP equals the credit value of whatever you destroy, plus 30 per crew member boarded. Each level needs 45% more XP than the last, starting at 100, so a first sector gives roughly 3–4 level-ups. A level-up pauses the game and offers three random perks that aren't maxed out:
   - defence: hull, ceramic plates, damage control;
@@ -115,14 +117,32 @@ Player weapons:
 
   Perks stack on top of the shop stats in `computeStats(save, perks)` and reset when the run ends.
 - **Hangar shop (permanent):** spend banked credits. Items appear gradually: four at the start (engine, armour, fuel, rockets), then missiles, ammo bay and cabin space at sector 2, then cannon HE, flares and thermobaric warheads at sector 3, then feed system and radar at sector 4. A teaser shows the next batch. Each new sector also raises the level caps.
-- **Supplies:** landing within about 18 voxels of a crate collects it (and any others in reach). So does hovering over it within 14 voxels horizontally, lower than 34 above it and slower than 22. The crate's marker says LOWER, SLOW DOWN or BLOCKED when you're close but not collecting.
+- **Supplies:** landing within about 18 voxels of a crate collects it (and any others in reach). So does hovering over it within 14 voxels horizontally, lower than 24 above it and slower than 22. The crate's marker says LOWER, SLOW DOWN or BLOCKED when you're close but not collecting.
 - **Sector intro** (`game/intro.ts`, `ui/titleCard.ts`): the briefing is shown over an establishing shot of the whole board, seen corner-on from the sunlit side at a low angle so two cliff faces and the underside show. LAUNCH holds that shot for 0.8 s with the sector title, then the camera dives for 4 s and ends exactly on the game camera: it settles over the helipad first and closes the distance last, with distance blended in log space so the zoom feels even. The rotor spools up during the last two seconds, so the aircraft is ready to lift when control arrives. While the camera is far the clip range and the shadowed area grow to take in the whole board and the fog backs off. Space, Enter, Esc, a click or A / B / Menu skips it (it fast-forwards at 8×, it does not cut). `?intro=0` turns it off.
 - **Camera:** the default zoom is wider. The camera aims at the aircraft's altitude, so the aircraft stays near the centre of the screen, and a smoothed look-ahead along your velocity shows more of what's ahead.
 - **Kill streak:** each kill within 6 seconds of the previous one adds 10% to credits earned, up to ×2 (XP is not multiplied). Emplacements, mobiles and enemy structures worth 15 CR or more count; walls don't.
 - **Feedback:** rewards float up from the kill, a red arc around the aircraft points at where a hit came from, base kills and gunship kills trigger a short slow-motion beat (0.3× for a fraction of a second, real-time countdown), and explosions add a ground shockwave ring, a white-hot core and a ring of kicked-up dust.
 - **Fail states:** the aircraft is destroyed, or you run out of fuel and land outside the FARP (stranded).
 
-The brief said there are no humans on the map. Downed crews are therefore shown only as red signal smoke and a strobe, never as figures. You land next to the smoke and they board. Tell me if you'd prefer visible survivors or captured soldiers in compounds.
+The brief said there are no humans on the map. Downed crews are therefore shown only as violet signal smoke and a strobe, never as figures. You land next to the smoke and they board. Tell me if you'd prefer visible survivors or captured soldiers in compounds.
+
+### Map generation rules
+
+`src/world/generator.ts`
+
+- **A flight out before anything happens.** Distances are measured from the FARP. No emplacement, checkpoint or guarded site is generated within 260 voxels (`SAFE_RADIUS`); the highway and its convoy keep the same distance. Bases are at least 40% of the sector width away (400 minimum), rescue sites 32% (320 minimum), towns 300, and no supply crate is within 190.
+- **Supplies are dealt, not sprinkled.** A sector holds `6 + size/200` crates (11 in sector 1). A town has one at most, a base one hidden in a building at most, an oasis may have a repair kit, and loose drops fill the rest from a grid with one crate per cell. Every crate is at least 150 from the next (`SUPPLY_GAP`), types are dealt evenly and a crate's neighbours within 320 are of a different type. A convoy truck drops nothing if a crate already lies within 70.
+- **A place, not a sandbox.** Four sectors in five have a river running edge to edge (a wadi two voxels deep with green banks, palms and scrub), which roads cross on a causeway. Towns have names and crop fields around them; more fields line the river. Scrub grows in belts.
+- **A clean rim.** The terrain eases down to a flat level over the last 64 voxels, so the board's cut edge is level all the way round, and the highway and the river run out to it. Past the border is the drop (see *The board* in section 2). The aircraft is turned back 26 voxels inside the border.
+
+### HUD and map
+
+`src/ui/hud.ts`
+
+- **One dashboard**, bottom centre: armor and fuel, then each weapon as a big numeral with its key (amber when low, red and blinking when empty), then speed and height. Objectives and credits are top-left, the minimap top-right.
+- **Colour is the legend**, and it means the same on the HUD, the minimap, the full map and the markers in the world: red is hostile, cyan is home, violet is a crew to pick up (the smoke is violet too), yellow is supplies, orange is the convoy.
+- **Areas, not icons.** The things to do are drawn as areas with their names: the hatched objective area, the crew-down circle, the FARP ring with an H. The only dots are enemies the radar has picked up: emplacements stay marked once seen, moving things only while the radar holds them. Town names and a lettered grid (A–H by 1–8) make positions sayable; the minimap caption shows the square you are in.
+- **Minimap:** a north-up window on the map, one radar range to each side, with rim pointers for the places outside it (the FARP is always the cyan H).
 
 ## 7. Controller support
 
@@ -150,7 +170,7 @@ src/
   game/      game loop/state, progression & save, structure integrity,
              scene rig + post-processing, time of day / weather,
              the floating board + far model, sector intro camera
-  ui/        HUD (DOM + overlay canvas, radar, map), menus (title, briefing, level-up, shop, debrief, pause),
+  ui/        HUD (DOM + overlay canvas, minimap, tactical map), menus (title, briefing, level-up, shop, debrief, pause),
              sector title card
 ```
 

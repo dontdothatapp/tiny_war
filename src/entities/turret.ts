@@ -37,7 +37,7 @@ export const TURRET_SPECS: Record<TurretType, TurretSpec> = {
   aaa: { name: 'AA gun', range: 215, hp: 60, turn: 1.6, rof: 0.08, burst: 12, burstCooldown: 2.4, speed: 260, damage: 0.8, spread: 0.04, maxElev: 1.5, minElev: -0.1, minTargetAgl: 0, maxTargetRel: 999, lockTime: 0, reward: 50, radarColor: '#ff7a3a' },
   flak: { name: 'Flak cannon', range: 300, hp: 70, turn: 1.0, rof: 0.7, burst: 2, burstCooldown: 3.4, speed: 150, damage: 12, spread: 0.015, maxElev: 1.5, minElev: 0.12, minTargetAgl: 14, maxTargetRel: 999, lockTime: 0, reward: 70, radarColor: '#ff5050' },
   sam: { name: 'SAM launcher', range: 420, hp: 45, turn: 1.2, rof: 0.4, burst: 1, burstCooldown: 9, speed: 60, damage: 28, spread: 0, maxElev: 1.2, minElev: 0.2, minTargetAgl: 12, maxTargetRel: 999, lockTime: 2.6, reward: 90, radarColor: '#ff3030' },
-  tank: { name: 'Tank', range: 190, hp: 90, turn: 0.8, rof: 0.4, burst: 1, burstCooldown: 4.5, speed: 170, damage: 14, spread: 0.012, maxElev: 0.5, minElev: -0.15, minTargetAgl: 0, maxTargetRel: 60, lockTime: 0, reward: 80, radarColor: '#ff8a5a' },
+  tank: { name: 'Tank', range: 190, hp: 90, turn: 0.8, rof: 0.4, burst: 1, burstCooldown: 4.5, speed: 170, damage: 14, spread: 0.012, maxElev: 0.5, minElev: -0.15, minTargetAgl: 0, maxTargetRel: 38, lockTime: 0, reward: 80, radarColor: '#ff8a5a' },
 };
 
 interface TurretParts {
