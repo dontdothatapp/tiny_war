@@ -33,17 +33,24 @@ const REF_MASS = 85;
 const ATT_STIFF = 80;
 const ATT_DAMP = 16.5;
 /** Horizontal drag: quadratic and linear coefficients on air speed. */
-const DRAG_QUAD = 0.0034;
+const DRAG_QUAD = 0.0019;
 const DRAG_LIN = 0.07;
 /** Tilt (rad) the SAS applies per unit of ground speed it is cancelling. */
 const HOLD_GAIN = 0.1;
 /** Share of max tilt the SAS uses to brake when the stick is released (opposite stick brakes harder). */
-const BRAKE_TILT = 0.8;
+const BRAKE_TILT = 0.9;
 /** Pedal turn rate (rad/s) in the hover and at cruise speed. */
 const YAW_RATE_HOVER = 1.6;
 const YAW_RATE_CRUISE = 0.9;
 /** Side force per unit of forward speed x sideslip speed. */
 const KEEL = 0.02;
+/**
+ * Service ceiling (world y). The useful band is narrow on purpose: high enough to clear
+ * the mesas and the tallest mast, low enough that the ground never drops out of the picture.
+ */
+export const CEILING = 68;
+/** The aircraft is turned back this far inside the sector border. */
+const BORDER = 26;
 
 /**
  * Simulation-leaning flight model:
@@ -237,7 +244,8 @@ export class Helicopter {
     const eff = effBase * ge * etl * vrsF;
     if (this.assists && !crash && this.engineOn) {
       const hover = (m * G) / (this.maxThrust * Math.max(0.2, eff) * Math.max(0.5, up.y));
-      let targetVs = c.collective * 16;
+      // the climb eases off into the service ceiling
+      let targetVs = Math.min(c.collective * 16, (CEILING - this.pos.y) * 1.2);
       if (targetVs < 0) {
         // the assist keeps a slow descent out of vortex ring state...
         targetVs = Math.max(targetVs, -lerp(9.5, 16, clamp(speedH / 14, 0, 1)));
@@ -286,12 +294,12 @@ export class Helicopter {
 
     // map bounds (soft wall)
     const S = this.world.sx;
-    if (this.pos.x < 8) this.vel.x += (8 - this.pos.x) * 4 * dt;
-    if (this.pos.z < 8) this.vel.z += (8 - this.pos.z) * 4 * dt;
-    if (this.pos.x > S - 8) this.vel.x -= (this.pos.x - S + 8) * 4 * dt;
-    if (this.pos.z > S - 8) this.vel.z -= (this.pos.z - S + 8) * 4 * dt;
-    // service ceiling: thrust fades near the top of the world
-    if (this.pos.y > 150) this.vel.y -= (this.pos.y - 150) * 2 * dt;
+    if (this.pos.x < BORDER) this.vel.x += (BORDER - this.pos.x) * 4 * dt;
+    if (this.pos.z < BORDER) this.vel.z += (BORDER - this.pos.z) * 4 * dt;
+    if (this.pos.x > S - BORDER) this.vel.x -= (this.pos.x - S + BORDER) * 4 * dt;
+    if (this.pos.z > S - BORDER) this.vel.z -= (this.pos.z - S + BORDER) * 4 * dt;
+    // service ceiling with the assists off: the air gets thin and the climb dies away
+    if (this.pos.y > CEILING) this.vel.y -= ((this.pos.y - CEILING) * 2 + Math.max(0, this.vel.y) * 1.5) * dt;
 
     this.syncVisual(dt);
   }

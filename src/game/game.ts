@@ -6,12 +6,12 @@ import { RNG, clamp, lerp } from '../core/rng';
 import { DebrisSystem } from '../fx/debris';
 import { Effects } from '../fx/effects';
 import { ParticleSystem } from '../fx/particles';
-import { Helicopter, HeliControls } from '../entities/helicopter';
+import { CEILING, Helicopter, HeliControls } from '../entities/helicopter';
 import { GroundVehicle, Gunship, Mobile, MobileEnv, MobileShot } from '../entities/mobiles';
 import { PICKUP_COLOR, PICKUP_LABEL, Pickup, RescueSite } from '../entities/pickups';
 import { HitTarget, Projectile, Projectiles } from '../entities/projectiles';
 import { TURRET_SPECS, Turret } from '../entities/turret';
-import { Hud, HudObjective, KEYBOARD_HELP, RadarBlip } from '../ui/hud';
+import { HUD_COLORS, Hud, HudObjective, KEYBOARD_HELP, MapUnit, MapZone } from '../ui/hud';
 import { Menus, PadStatus } from '../ui/menus';
 import { BodySystem } from '../voxel/bodies';
 import { ChunkRenderer } from '../voxel/chunkRenderer';
@@ -19,13 +19,14 @@ import { Destruction } from '../voxel/destruction';
 import { M } from '../voxel/materials';
 import { voxelGlobals } from '../voxel/voxelMaterial';
 import { VoxelWorld } from '../voxel/world';
-import { MapGenerator, WORLD_HEIGHT } from '../world/generator';
+import { MapGenerator, SAFE_RADIUS, WORLD_HEIGHT } from '../world/generator';
 import type { BaseDef, MapData, PickupType } from '../world/mapTypes';
 import * as P from '../world/prefabs';
 import type { VoxModel } from '../world/voxModel';
 import { HeliStats, PerkDef, Perks, SaveData, UPGRADES, computeStats, level, levelCap, loadSave, rollPerks, upgradeCost, writeSave, xpToNext } from './progression';
 import { Atmosphere, atmosphereFor } from './atmosphere';
 import { SceneRig } from './scene';
+import { buildSkirt } from './skirt';
 import { StructureState, StructureTracker } from './structures';
 
 type State = 'title' | 'briefing' | 'playing' | 'paused' | 'levelup' | 'over' | 'menu';
@@ -151,6 +152,10 @@ export class Game {
   private lockT = 0;
   private boresight = new THREE.Vector3();
   private objectiveTurrets = new Set<Turret>();
+  /** emplacements the radar has picked up at some point (they stay on the map) */
+  private spotted = new Set<Turret>();
+  /** the open desert around the sector */
+  private skirt: THREE.Mesh | null = null;
   private objectiveStructures = new Set<number>();
   private aim = new THREE.Vector3();
   private aimValid = false;
@@ -161,6 +166,8 @@ export class Game {
   private camFocus = new THREE.Vector3();
   private camVel = new THREE.Vector3();
   private zoom = 285;
+  /** extra camera distance at speed: the view opens up ahead as the aircraft gets going */
+  private speedZoom = 0;
   private camLead = new THREE.Vector3();
   /** hint for the nearest pickup ('' = none) */
   private pickupHint = '';
@@ -518,6 +525,8 @@ export class Game {
 
   private disposeSector() {
     for (const c of [...this.sectorGroup.children]) this.sectorGroup.remove(c);
+    this.skirt?.geometry.dispose();
+    this.skirt = null;
     this.turrets = [];
     this.pickups = [];
     this.rescues = [];
@@ -543,6 +552,8 @@ export class Game {
     this.world.filler = this.gen;
     this.chunks = new ChunkRenderer(this.world);
     this.sectorGroup.add(this.chunks.group);
+    this.skirt = buildSkirt(this.map);
+    this.sectorGroup.add(this.skirt);
     this.atmo = atmosphereFor(sector);
     this.rig.applyAtmosphere(this.atmo);
     const fog = this.rig.scene.fog as THREE.Fog;
@@ -586,6 +597,7 @@ export class Game {
     this.scrambled = false;
     this.streakN = this.streakT = 0;
     this.hitArcs.length = 0;
+    this.spotted.clear();
     this.hud.clearFloaters();
     const diff = this.map.sector - 1;
     this.turrets = this.map.turrets.map((t) => {
@@ -679,7 +691,7 @@ export class Game {
     // engine/rotor loops only while flying (silent in pause, level-up and menus)
     if (this.state !== 'playing' && this.state !== 'over') this.audio.engine(0, 0, 0, false);
     this.updateCamera(dt);
-    this.chunks.viewRadius = 140 + this.zoom * 0.5;
+    this.chunks.viewRadius = 140 + (this.zoom + this.speedZoom) * 0.5;
     this.chunks.update(this.camFocus.x, this.camFocus.z - 30);
     this.evictT -= dt;
     if (this.evictT <= 0) {
@@ -1279,7 +1291,7 @@ export class Game {
     const S = this.map.size;
     x = clamp(x, 20, S - 20);
     z = clamp(z, 20, S - 20);
-    const g = new Gunship(x, this.map.heights[Math.floor(x) + Math.floor(z) * S] + 38, z, this.map.sector - 1);
+    const g = new Gunship(x, this.map.heights[Math.floor(x) + Math.floor(z) * S] + 30, z, this.map.sector - 1);
     g.alerted = alerted;
     this.mobiles.push(g);
     this.sectorGroup.add(g.root);
@@ -1316,7 +1328,7 @@ export class Game {
     const ux = (hw.bx - hw.ax) / len,
       uz = (hw.bz - hw.az) / len;
     const blocked = (x: number, z: number) =>
-      x < 16 || z < 16 || x > S - 16 || z > S - 16 || Math.hypot(f.x - x, f.z - z) < 120 || this.map.bases.some((b) => Math.hypot(b.x - x, b.z - z) < b.r + 26);
+      x < 16 || z < 16 || x > S - 16 || z > S - 16 || Math.hypot(f.x - x, f.z - z) < SAFE_RADIUS || this.map.bases.some((b) => Math.hypot(b.x - x, b.z - z) < b.r + 26);
     let best0 = 0,
       best1 = 0,
       start = -1;
@@ -1486,6 +1498,8 @@ export class Game {
   }
 
   private dropPickup(type: PickupType, x: number, z: number) {
+    // one crate per spot: a second truck dying beside the first one's crate drops nothing
+    if (this.pickups.some((p) => p.alive && Math.hypot(p.pos.x - x, p.pos.z - z) < 70)) return;
     const y = this.world.topY(x, z) + 1;
     const pk = new Pickup(type, new THREE.Vector3(x, y, z));
     this.pickups.push(pk);
@@ -1706,7 +1720,7 @@ export class Game {
 
   /**
    * Supplies: land within ~18 of a crate, or hover over it (within 14, below
-   * 34 above it, slower than 22) and the crew grabs / winches it in under a second.
+   * 24 above it, slower than 22) and the crew grabs / winches it in under a second.
    */
   private updateWinch(dt: number) {
     const h = this.heli;
@@ -1743,7 +1757,7 @@ export class Game {
       const hspeed = Math.hypot(h.vel.x, h.vel.z);
       landedNear = h.landed && d < 18;
       const inRange = d < 14;
-      const low = height < 34;
+      const low = height < 24;
       const slow = hspeed < 22;
       const clear = landedNear || (inRange && this.world.lineClear(p.pos.x, p.pos.y + 1.5, p.pos.z, h.pos.x, h.pos.y, h.pos.z, 0.5, 2));
       ok = landedNear || (inRange && low && slow && clear);
@@ -1808,7 +1822,7 @@ export class Game {
       r.smokeT -= dt;
       if (r.smokeT <= 0) {
         r.smokeT = 0.18;
-        this.fx.signalSmoke(r.pos.x, r.pos.y + 1, r.pos.z, 0xd84a32);
+        this.fx.signalSmoke(r.pos.x, r.pos.y + 1, r.pos.z, 0xa45cf0);
       }
     }
   }
@@ -1910,6 +1924,7 @@ export class Game {
       const want = new THREE.Vector3(h.vel.x * 1.0, 0, h.vel.z * 1.4);
       if (want.length() > 85) want.setLength(85);
       this.camLead.lerp(want, 1 - Math.exp(-1.6 * dt));
+      this.speedZoom = lerp(this.speedZoom, clamp((Math.hypot(h.vel.x, h.vel.z) - 25) * 1.7, 0, 60), 1 - Math.exp(-1.2 * dt));
       // aim at the aircraft's altitude so it stays near the centre instead of drifting up-screen
       target = h.pos.clone().add(this.camLead);
       target.y = h.pos.y - h.agl * 0.15;
@@ -1917,7 +1932,7 @@ export class Game {
     } else target = this.camFocus;
     void this.camVel;
     const pitch = 0.98; // ~56 degrees
-    const dist = this.zoom;
+    const dist = this.zoom + this.speedZoom;
     const shake = Math.max(this.shake, this.heli?.shake ?? 0);
     this.shake = Math.max(0, this.shake - dt * 2);
     const sx = (Math.random() - 0.5) * shake * 3,
@@ -2001,17 +2016,17 @@ export class Game {
     // objectives
     const objs: HudObjective[] = this.map.bases.map((b) => {
       const [d, n] = this.baseProgress(b);
-      return { text: `${b.name}${n > 1 ? ` ${d}/${n}` : ''}`, done: d === n };
+      return { text: `Destroy ${b.name}${n > 1 ? ` ${d}/${n}` : ''}`, done: d === n, kind: 'target' };
     });
     const rescued = this.rescues.reduce((a, s) => a + (s.total - s.crew), 0);
     const total = this.rescues.reduce((a, s) => a + s.total, 0);
-    objs.push({ text: `Rescue crews ${rescued}/${total}${h.crew ? ` (${h.crew} aboard)` : ''}`, done: rescued === total && h.crew === 0 });
+    objs.push({ text: `Rescue crews ${rescued}/${total}${h.crew ? ` · ${h.crew}/${this.stats.cabin} aboard` : ''}`, done: rescued === total && h.crew === 0, kind: 'rescue' });
     const cv = this.convoy;
     if (cv && cv.rolling) {
       const eta = `${Math.floor(cv.eta / 60)}:${String(Math.floor(cv.eta % 60)).padStart(2, '0')}`;
-      objs.push({ text: cv.done ? `Convoy ${cv.killed}/${cv.total}${cv.escaped ? ' · escaped' : ''}` : `Convoy ${cv.killed}/${cv.total} · leaves in ${eta}`, done: cv.done });
+      objs.push({ text: cv.done ? `Convoy ${cv.killed}/${cv.total}${cv.escaped ? ' · escaped' : ''}` : `Convoy ${cv.killed}/${cv.total} · leaves in ${eta}`, done: cv.done, kind: 'convoy' });
     }
-    if (this.sectorCleared) objs.push({ text: '> RETURN TO FARP AND LAND', done: false, active: true });
+    if (this.sectorCleared) objs.push({ text: 'RETURN TO THE FARP AND LAND', done: false, active: true, kind: 'home' });
     // text panels are DOM: refresh at ~15 Hz rather than every frame
     this.hudT -= dt;
     const refresh = this.hudT <= 0;
@@ -2022,21 +2037,22 @@ export class Game {
       fuel: h.fuel,
       maxFuel: this.stats.maxFuel,
       gun: this.ammo.gun,
+      maxGun: this.stats.gunAmmo,
       rockets: this.ammo.rockets,
+      maxRockets: this.stats.rockets,
       missiles: this.ammo.missiles,
       maxMissiles: this.stats.missiles,
       flares: this.ammo.flares,
       maxFlares: this.stats.flares,
-      crew: h.crew,
-      cabin: this.stats.cabin,
       alt: h.agl,
+      maxAlt: CEILING - 12,
       speed: Math.hypot(h.vel.x, h.vel.z),
-      vs: h.vel.y,
-      torque: h.collective,
-      rpm: h.rpm,
       heading: h.yaw,
       assists: h.assists,
-      mass: h.mass,
+      place: this.placeName(),
+      keys: this.padMode
+        ? { gun: this.pad.glyph(BTN.RT), rockets: this.pad.glyph(BTN.LT), missiles: this.pad.glyph(BTN.A), flares: this.pad.glyph(BTN.B) }
+        : { gun: 'LMB', rockets: 'RMB', missiles: 'F', flares: 'X' },
       windDir: Math.atan2(h.wind.x, -h.wind.z),
       windSpeed: h.wind.length(),
       credits: this.save.credits,
@@ -2051,22 +2067,45 @@ export class Game {
       objectives: objs,
     });
 
-    // radar
-    const blips: RadarBlip[] = [];
-    for (const t of this.turrets) if (t.alive) blips.push({ x: t.pos.x, z: t.pos.z, color: t.spec.radarColor, size: t.type === 'sam' ? 3.5 : 2.5, shape: t.type === 'sam' ? 'diamond' : 'dot' });
-    for (const b of this.map.bases) if (!this.baseDone(b)) blips.push({ x: b.x, z: b.z, color: '#ff4a3a', size: 4, shape: 'ring' });
-    for (const p of this.pickups) if (p.alive) blips.push({ x: p.pos.x, z: p.pos.z, color: PICKUP_COLOR[p.type], size: 2, shape: 'square' });
-    for (const s of this.rescues) if (!s.done) blips.push({ x: s.pos.x, z: s.pos.z, color: '#ff9adf', size: 3.5, shape: 'diamond' });
+    // Map and minimap. The things to do are areas (home, objective, crew down); the only
+    // dots are enemies the radar has picked up. Emplacements stay marked once seen, moving
+    // things only while the radar holds them.
+    const radarRange = this.stats.radarRange * this.atmo.radar;
+    const inRadar = (x: number, z: number) => Math.hypot(x - h.pos.x, z - h.pos.z) < radarRange;
+    const farp = this.map.farp;
+    const zones: MapZone[] = [{ kind: 'home', x: farp.padX, z: farp.padZ, r: 34, label: 'FARP' }];
+    for (const b of this.map.bases) {
+      const [d, n] = this.baseProgress(b);
+      zones.push({ kind: 'objective', x: b.x, z: b.z, r: b.r, label: b.name, sub: n > 1 ? `${d}/${n}` : '', done: d === n });
+    }
+    for (const s of this.rescues) if (!s.done) zones.push({ kind: 'rescue', x: s.pos.x, z: s.pos.z, r: 40, label: `CREW ×${s.crew}` });
+    for (const p of this.map.places) zones.push({ kind: 'town', x: p.x, z: p.z, r: p.r, label: p.name });
+    const units: MapUnit[] = [];
+    for (const t of this.turrets) {
+      if (!t.alive) continue;
+      if (!this.spotted.has(t)) {
+        if (!inRadar(t.pos.x, t.pos.z)) continue;
+        this.spotted.add(t);
+      }
+      units.push({ kind: t.type === 'sam' ? 'sam' : 'gun', x: t.pos.x, z: t.pos.z });
+    }
     for (const m of this.mobiles) {
       if (!m.alive) continue;
-      // parked convoy vehicles stay off the scope until the convoy rolls
+      // parked convoy vehicles stay off the map until the convoy rolls (then intel tracks it)
       if (!m.air && cv && !cv.rolling) continue;
-      blips.push({ x: m.pos.x, z: m.pos.z, color: m.spec.radarColor, size: m.air ? 3.5 : 2.5, shape: m.air ? 'tri' : 'dot' });
+      if (m.air && !m.hunting && !inRadar(m.pos.x, m.pos.z)) continue;
+      units.push({ kind: m.air ? 'air' : 'vehicle', x: m.pos.x, z: m.pos.z });
     }
-    blips.push({ x: this.map.farp.padX, z: this.map.farp.padZ, color: '#7dffb0', size: 4, shape: 'diamond' });
-    const radarRange = this.stats.radarRange * this.atmo.radar;
-    hud.drawRadar(h.pos.x, h.pos.z, h.yaw, radarRange, blips.filter((b) => b.shape !== 'square' || Math.hypot(b.x - h.pos.x, b.z - h.pos.z) < radarRange), dt);
-    hud.drawMap(this.map.size, { x: h.pos.x, z: h.pos.z, heading: h.yaw }, blips);
+    const lead = cv && cv.rolling && !cv.done ? cv.vehicles.find((v) => v.alive) : undefined;
+    hud.drawMaps({
+      size: this.map.size,
+      heli: { x: h.pos.x, z: h.pos.z, heading: h.yaw },
+      range: radarRange,
+      zones,
+      units,
+      supplies: this.pickups.filter((p) => p.alive).map((p) => ({ type: p.type, x: p.pos.x, z: p.pos.z })),
+      route: lead ? { ax: lead.pos.x, az: lead.pos.z, bx: lead.end.x, bz: lead.end.z } : null,
+    });
 
     // overlay
     hud.clearOverlay();
@@ -2111,10 +2150,10 @@ export class Game {
       if (!m.alive || (!m.air && cv && !cv.rolling)) continue;
       hud.project(m.center, cam, sp);
       if (offScreen(sp)) {
-        if (m.air && m.hunting) hud.edgeMarker(sp.x, sp.y, '#ff5a8a', 'BANDIT', sp.behind);
+        if (m.air && m.hunting) hud.edgeMarker(sp.x, sp.y, HUD_COLORS.hostile, 'BANDIT', sp.behind);
         else if (!m.air && !convoyMarked && Math.hypot(m.pos.x - h.pos.x, m.pos.z - h.pos.z) < 700) {
           convoyMarked = true;
-          hud.edgeMarker(sp.x, sp.y, '#ffd24a', 'CONVOY', sp.behind);
+          hud.edgeMarker(sp.x, sp.y, HUD_COLORS.convoy, 'CONVOY', sp.behind);
         }
       } else if (m !== this.desig?.mobile) hud.bracket(sp.x, sp.y, 10, m.hunting ? 'rgba(255,90,120,0.95)' : 'rgba(255,190,90,0.55)');
     }
@@ -2144,20 +2183,33 @@ export class Game {
       hud.edgeMarker(sp.x, sp.y, PICKUP_COLOR[p.type], PICKUP_LABEL[p.type] + hint, sp.behind);
       if (p === this.winchTarget) hud.progressRing(sp.x, sp.y + 10, p.winch, PICKUP_COLOR[p.type]);
     }
+    // off screen, a marker also says how far (1 voxel is half a metre)
+    const far = (x: number, z: number) => `${Math.round(Math.hypot(x - h.pos.x, z - h.pos.z) / 20) * 10}m`;
     for (const s of this.rescues) {
       if (s.done) continue;
       hud.project(new THREE.Vector3(s.pos.x, s.pos.y + 4, s.pos.z), cam, sp);
-      hud.edgeMarker(sp.x, sp.y, '#ff9adf', `CREW ×${s.crew}`, sp.behind);
-      if (s.boardT > 0.02) hud.progressRing(sp.x, sp.y + 10, s.boardT / 1.1, '#ff9adf');
+      hud.edgeMarker(sp.x, sp.y, HUD_COLORS.rescue, offScreen(sp) ? `CREW ×${s.crew} · ${far(s.pos.x, s.pos.z)}` : `CREW ×${s.crew}`, sp.behind);
+      if (s.boardT > 0.02) hud.progressRing(sp.x, sp.y + 10, s.boardT / 1.1, HUD_COLORS.rescue);
     }
     const f = this.map.farp;
     hud.project(new THREE.Vector3(f.padX, f.y + 3, f.padZ), cam, sp);
-    hud.edgeMarker(sp.x, sp.y, '#7dffb0', this.sectorCleared ? 'FARP · LAND TO FINISH' : 'FARP', sp.behind);
+    hud.edgeMarker(sp.x, sp.y, HUD_COLORS.home, this.sectorCleared ? 'FARP · LAND TO FINISH' : offScreen(sp) ? `FARP · ${far(f.padX, f.padZ)}` : 'FARP', sp.behind);
     // objective markers (off-screen only)
     for (const b of this.map.bases) {
       if (this.baseDone(b)) continue;
       hud.project(new THREE.Vector3(b.x, f.y + 5, b.z), cam, sp);
-      if (offScreen(sp)) hud.edgeMarker(sp.x, sp.y, '#ff6a5a', b.name.split(' ').slice(-1)[0], sp.behind);
+      if (offScreen(sp)) hud.edgeMarker(sp.x, sp.y, HUD_COLORS.hostile, `${b.name.split(' ').slice(-1)[0]} · ${far(b.x, b.z)}`, sp.behind);
     }
+  }
+
+  /** Where the aircraft is, for the minimap caption: a place name if it is over one, and the grid square. */
+  private placeName(): string {
+    const p = this.heli.pos;
+    const S = this.map.size;
+    const sq = `${'ABCDEFGH'[clamp(Math.floor((p.x / S) * 8), 0, 7)]}${clamp(Math.floor((p.z / S) * 8), 0, 7) + 1}`;
+    const f = this.map.farp;
+    if (Math.hypot(f.padX - p.x, f.padZ - p.z) < 70) return `FARP · ${sq}`;
+    for (const t of this.map.places) if (Math.hypot(t.x - p.x, t.z - p.z) < t.r + 30) return `${t.name} · ${sq}`;
+    return `GRID ${sq}`;
   }
 }

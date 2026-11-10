@@ -207,7 +207,7 @@ export class Effects {
       size0: 1,
       size1: 6,
       c0: color,
-      c1: 0xd8b0a0,
+      c1: 0xd4bce8,
       a0: 0.85,
       a1: 0,
       drag: 0.4,

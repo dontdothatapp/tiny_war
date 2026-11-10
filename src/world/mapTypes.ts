@@ -82,6 +82,15 @@ export interface FarpDef {
   spawnYaw: number;
 }
 
+/** A named locality (drawn as a label on the map). */
+export interface PlaceDef {
+  name: string;
+  kind: 'town' | 'oasis';
+  x: number;
+  z: number;
+  r: number;
+}
+
 export interface RoadSeg {
   ax: number;
   az: number;
@@ -105,7 +114,10 @@ export interface MapData {
   bases: BaseDef[];
   farp: FarpDef;
   roads: RoadSeg[];
-  /** RGBA minimap image (size/MINIMAP_DIV square). */
+  places: PlaceDef[];
+  /** Course of the river, edge to edge (empty in a dry sector). */
+  river: { x: number; z: number }[];
+  /** RGBA minimap image (minimapRes square, covering the whole sector). */
   minimap: Uint8ClampedArray;
   minimapRes: number;
 }

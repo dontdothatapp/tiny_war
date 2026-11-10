@@ -333,7 +333,7 @@ export class Gunship extends Mobile {
       this.orbitA += this.orbitDir * dt * 0.28;
       this.goal.set(this.home.x + Math.cos(this.orbitA) * 85, 0, this.home.z + Math.sin(this.orbitA) * 85);
     } else if (this.state === 'attack') {
-      wantSpeed = 40;
+      wantSpeed = 52;
       this.goal.set(tgt.x + env.targetVel.x * 0.6, 0, tgt.z + env.targetVel.z * 0.6);
       if (dist < 52 && this.stateT > 1) {
         // break away past the target, to one side
@@ -343,7 +343,7 @@ export class Gunship extends Mobile {
         this.goal.set(p.x - Math.sin(a) * 190, 0, p.z - Math.cos(a) * 190);
       }
     } else {
-      wantSpeed = 44;
+      wantSpeed = 56;
       if (this.stateT > 2.4 + Math.random() * 0.02 || Math.hypot(this.goal.x - p.x, this.goal.z - p.z) < 30) {
         this.state = 'attack';
         this.stateT = 0;
@@ -364,8 +364,8 @@ export class Gunship extends Mobile {
     this.vel.z = fz * this.speed;
     // altitude: follow the terrain, and match the player while fighting
     const g = Math.max(ground(p.x, p.z), ground(p.x + fx * 25, p.z + fz * 25), ground(p.x + fx * 50, p.z + fz * 50));
-    let wantY = g + 36;
-    if (this.state !== 'patrol') wantY = clamp(tgt.y - 4, g + 30, g + 72);
+    let wantY = g + 30;
+    if (this.state !== 'patrol') wantY = clamp(tgt.y - 4, g + 22, g + 46);
     if (env.world.solidAt(p.x + fx * 14, p.y - 2, p.z + fz * 14) || env.world.solidAt(p.x + fx * 26, p.y - 2, p.z + fz * 26)) wantY = p.y + 22;
     this.vel.y = clamp((wantY - p.y) * 1.4, -14, 16);
     p.addScaledVector(this.vel, dt);
@@ -395,7 +395,7 @@ export class Gunship extends Mobile {
     }
 
     this.bank = lerp(this.bank, turn * 0.32, 1 - Math.exp(-5 * dt));
-    this.pitchVis = lerp(this.pitchVis, -0.24 * (this.speed / 44), 1 - Math.exp(-3 * dt));
+    this.pitchVis = lerp(this.pitchVis, -0.24 * (this.speed / 56), 1 - Math.exp(-3 * dt));
     this.rotorA += 30 * dt;
     this.applyVisual(dt);
   }

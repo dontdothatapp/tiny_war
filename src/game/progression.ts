@@ -176,7 +176,7 @@ export function computeStats(s: SaveData, perks: Perks = {}): HeliStats {
     maxFuel: 100 * (1 + 0.2 * L('fuel')) * (1 + 0.25 * P('fuelTanks')),
     maxHp: 100 + 25 * L('armor') + 25 * P('hull'),
     twr: 1.42 + 0.09 * L('engine') + 0.07 * P('turbo'),
-    maxTilt: ((25 + 3 * L('engine') + 2 * P('turbo')) * Math.PI) / 180,
+    maxTilt: ((28 + 2 * L('engine') + 1.5 * P('turbo')) * Math.PI) / 180,
     gunAmmo: 300 + 120 * L('gunAmmo'),
     gunRadius: 1.5 + 0.3 * L('gunDmg') + 0.3 * P('heRounds'),
     gunPower: 3.2 + 0.9 * L('gunDmg') + 0.8 * P('heRounds'),

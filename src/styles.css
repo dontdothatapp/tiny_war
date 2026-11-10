@@ -5,6 +5,12 @@
   --panel-edge: rgba(157, 255, 154, 0.35);
   --warn: #ff5a4a;
   --gold: #e8d24a;
+  /* map + marker colours (same meaning everywhere): hostile, home, crew to rescue, supplies */
+  --hostile: #ff5a4a;
+  --home: #6fd3ff;
+  --rescue: #d79bff;
+  --supply: #ffd95a;
+  --convoy: #ff9a3a;
   --font: 'VT323', 'Courier New', ui-monospace, monospace;
 }
 html,
@@ -67,43 +73,196 @@ body {
   color: var(--phos-dim);
   margin-bottom: 4px;
 }
-.hud-obj .done {
+.hud-obj .o {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+/* marker in the colour the same thing has on the map */
+.hud-obj .o i {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  border: 2px solid var(--hostile);
+}
+.hud-obj .o.rescue i {
+  border-color: var(--rescue);
+}
+.hud-obj .o.convoy i {
+  border-color: var(--convoy);
+}
+.hud-obj .o.home i {
+  border-color: var(--home);
+  background: var(--home);
+}
+.hud-obj .o.done {
   color: var(--phos-dim);
+}
+.hud-obj .o.done span {
   text-decoration: line-through;
+}
+.hud-obj .o.done i {
+  border-color: var(--phos-dim);
+  background: var(--phos-dim);
 }
 .hud-obj .active {
   color: #fff;
   animation: blink 0.9s steps(2) infinite;
 }
-.hud-radar {
+.hud-obj .cr {
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px dashed rgba(157, 255, 154, 0.25);
+  color: var(--gold);
+}
+.hud-obj .cr b {
+  color: #fff3b0;
+  font-weight: normal;
+}
+.hud-obj .cr span {
+  color: var(--phos-dim);
+}
+.hud-mini {
   top: 14px;
   right: 14px;
   padding: 4px;
-  line-height: 0;
+  width: 216px;
 }
-.hud-status {
-  left: 14px;
-  bottom: 14px;
-  min-width: 330px;
+.hud-mini canvas {
+  display: block;
+  width: 216px;
+  height: 216px;
 }
-.hud-flight {
-  right: 14px;
-  bottom: 14px;
-  min-width: 210px;
-}
-.hud .row {
+.hud-mini .cap {
   display: flex;
-  gap: 12px;
   justify-content: space-between;
-  white-space: pre;
+  gap: 8px;
+  padding: 3px 3px 0;
+  font-size: 16px;
+  line-height: 1.1;
+  white-space: nowrap;
 }
-.hud .row.w {
-  justify-content: flex-start;
-  gap: 16px;
+.hud-mini .cap span:last-child {
+  color: var(--phos-dim);
 }
-.hud .row b {
+/* one dashboard: vitals, weapons, flight */
+.hud-dash {
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  padding: 6px 16px 8px;
+  white-space: nowrap;
+}
+.hud-dash .xp {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+  font-size: 15px;
+  line-height: 1;
   color: var(--gold);
+}
+.hud-dash .xp .bar {
+  height: 5px;
+}
+.hud-dash .xp .sas {
+  color: #ffb84a;
+}
+.hud-dash .cols {
+  display: flex;
+  align-items: stretch;
+}
+.hud-dash .vit {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 7px;
+  width: 250px;
+}
+.hud-dash .g {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1;
+}
+.hud-dash .g .l {
+  width: 50px;
+}
+.hud-dash .g .bar {
+  height: 14px;
+}
+.hud-dash .g .n {
+  min-width: 40px;
+  text-align: right;
+}
+.hud-dash .grp {
+  display: flex;
+  gap: 4px;
+  margin-left: 16px;
+  padding-left: 12px;
+  border-left: 1px solid var(--panel-edge);
+}
+.hud-dash .slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 78px;
+  line-height: 1;
+}
+.hud-dash .slot .l {
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  color: var(--phos-dim);
+}
+.hud-dash .slot b {
   font-weight: normal;
+  font-size: 42px;
+  line-height: 0.9;
+  color: #eaffea;
+}
+.hud-dash .slot .k {
+  font-size: 14px;
+  color: var(--phos-dim);
+}
+.hud-dash .slot.low b {
+  color: #ffb84a;
+  text-shadow: 0 0 8px rgba(255, 184, 74, 0.45);
+}
+.hud-dash .slot.out b,
+.hud-dash .slot.out .l {
+  color: var(--warn);
+  text-shadow: 0 0 8px rgba(255, 90, 74, 0.5);
+}
+.hud-dash .slot.out b {
+  animation: blink 0.6s steps(2) infinite;
+}
+.hud-dash .slot.under .k {
+  color: var(--home);
+}
+/* height above ground, with a notch at the radar floor */
+.hud-dash .alt {
+  position: relative;
+  width: 66px;
+  height: 5px;
+  margin: 1px 0 3px;
+  background: rgba(157, 255, 154, 0.12);
+  box-shadow: 0 0 0 1px rgba(157, 255, 154, 0.3);
+}
+.hud-dash .alt i {
+  display: block;
+  height: 100%;
+  background: var(--phos);
+}
+.hud-dash .alt u {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  background: var(--home);
+}
+.hud-dash .slot.under .alt i {
+  background: var(--home);
 }
 /* segmented gauge bars (armor, fuel, XP, streak timer) */
 .hud .bar {
@@ -141,9 +300,9 @@ body {
 }
 .hud-streak {
   position: absolute;
-  top: 218px;
+  top: 276px;
   right: 14px;
-  width: 172px;
+  width: 204px;
   padding: 4px 10px 8px;
   background: var(--panel);
   border: 2px solid rgba(232, 210, 74, 0.55);
@@ -209,7 +368,7 @@ body {
 }
 .hud-help {
   position: absolute;
-  bottom: 140px;
+  bottom: 128px;
   left: 50%;
   transform: translateX(-50%);
   text-align: center;
@@ -227,13 +386,91 @@ body {
   display: none;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
+  gap: 16px;
+  background: rgba(0, 0, 0, 0.6);
 }
 .hud-map canvas {
-  width: min(80vh, 90vw);
-  height: min(80vh, 90vw);
+  width: min(86vh, calc(96vw - 330px));
+  height: min(86vh, calc(96vw - 330px));
   border: 2px solid var(--panel-edge);
-  image-rendering: pixelated;
+}
+.map-legend {
+  width: 290px;
+  box-sizing: border-box;
+  background: var(--panel);
+  border: 2px solid var(--panel-edge);
+  border-radius: 6px;
+  padding: 10px 14px 12px;
+  line-height: 1.1;
+}
+.map-legend .t {
+  color: var(--phos-dim);
+  margin-bottom: 4px;
+}
+.map-legend .r {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 12px;
+  align-items: center;
+  margin: 9px 0;
+}
+.map-legend b {
+  display: block;
+  font-weight: normal;
+}
+.map-legend span,
+.map-legend .dim {
+  color: var(--phos-dim);
+  font-size: 16px;
+}
+.map-legend .dim {
+  margin-top: 10px;
+}
+.map-legend .sym {
+  display: block;
+  width: 22px;
+  height: 22px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  font-style: normal;
+  text-align: center;
+  line-height: 19px;
+  text-shadow: none;
+}
+.map-legend .sym.home {
+  border: 2px solid var(--home);
+  color: var(--home);
+}
+.map-legend .sym.obj {
+  border: 2px dashed var(--hostile);
+  background: repeating-linear-gradient(135deg, rgba(255, 90, 74, 0.5) 0 1px, transparent 1px 5px);
+}
+.map-legend .sym.rescue {
+  border: 2px dashed var(--rescue);
+  color: var(--rescue);
+}
+.map-legend .sym.supply {
+  width: 14px;
+  height: 14px;
+  margin: 0 4px;
+  border-radius: 0;
+  background: var(--supply);
+}
+.map-legend .sym.enemy {
+  width: 10px;
+  height: 10px;
+  margin: 0 6px;
+  background: var(--hostile);
+}
+.map-legend .sym.convoy {
+  height: 0;
+  border-radius: 0;
+  border-top: 2px dashed var(--convoy);
+}
+.map-legend .sym.self {
+  border-radius: 0;
+  background: #fff;
+  clip-path: polygon(50% 5%, 85% 95%, 50% 75%, 15% 95%);
 }
 @keyframes blink {
   50% {
@@ -459,10 +696,16 @@ body {
   .menu .logo {
     font-size: 64px;
   }
-  .hud-status,
-  .hud-flight {
-    min-width: 0;
-    font-size: 15px;
+  .hud-dash {
+    transform: translateX(-50%) scale(0.62);
+    transform-origin: bottom center;
+  }
+  .map-legend {
+    display: none;
+  }
+  .hud-map canvas {
+    width: min(86vh, 94vw);
+    height: min(86vh, 94vw);
   }
   .hud-obj {
     min-width: 0;
